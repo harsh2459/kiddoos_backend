@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { listBooks, getBook, createBook, updateBook, deleteBook } from "../controller/bookscontroller.js";
+import { listBooks, getBook, createBook, updateBook, deleteBook } from "../controller/booksController.js";
 import { requireAuth, optionalAuth } from "../controller/_middleware/auth.js";
 
 const router = Router();
