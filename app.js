@@ -40,7 +40,14 @@ import paymentRoutes from "./routes/paymentsroute.js";
 import uploadRoutes from "./routes/uploadsroute.js";
 import authRoutes from "./routes/authroute.js";
 import settingsRoutes from "./routes/settingsroute.js";
+import shiprocketRoutes from "./routes/shiprocketroute.js";
+import shiprocketProfileRoutes from "./routes/shiprocketprofileroute.js";
+import shipmentsRoutes from "./routes/shipmentsroute.js";
 
+
+app.use("/api/shipments", shipmentsRoutes);
+app.use("/api/shiprocket/profiles", shiprocketProfileRoutes);
+app.use("/api/shiprocket", shiprocketRoutes);
 app.use("/api/books", bookRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);

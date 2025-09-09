@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../model/User.js";
-
+import { encrypt } from "./_services/crypto.js";
 
 // Is there any admin in the system?
 export const hasAdmin = async (req, res) => {
@@ -59,4 +59,36 @@ export const login = async (req, res) => {
 
   const token = jwt.sign({ id: user._id, role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn: "7d" });
   res.json({ ok: true, token, role: user.role });
+};
+
+export const getMyShiprocket = async (req, res, next) => {
+  try {
+    const me = await User.findById(req.user?._id || req.user?.id).select("integrations.shiprocket").lean();
+    const sr = me?.integrations?.shiprocket || {};
+    res.json({
+      ok: true,
+      shiprocket: {
+        email: sr.email || null,
+        pickupLocation: sr.pickupLocation || null,
+        hasPassword: Boolean(sr.passwordEnc),
+        tokenExpiresAt: sr.auth?.expiresAt || null
+      }
+    });
+  } catch (e) { next(e); }
+};
+
+export const setMyShiprocket = async (req, res, next) => {
+  try {
+    const { email, password, pickupLocation } = req.body;
+    const update = {};
+    if (email !== undefined) update["integrations.shiprocket.email"] = email || null;
+    if (pickupLocation !== undefined) update["integrations.shiprocket.pickupLocation"] = pickupLocation || null;
+    if (password) {
+      update["integrations.shiprocket.passwordEnc"] = encrypt(password);
+      // wipe old token so we force re-login on next call
+      update["integrations.shiprocket.auth"] = { token: null, expiresAt: new Date(0) };
+    }
+    await User.updateOne({ _id: req.user._id }, { $set: update });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 };

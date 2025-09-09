@@ -29,7 +29,8 @@ export const uploadImage = (req, res) => {
   const rel = `/public/uploads/${req.file.filename}`;
 
   // absolute base for browsers on a different origin/port
-  const base = process.env.PUBLIC_URL_BASE || `${req.protocol}://${req.get("host")}`;
+  const bases = (process.env.PUBLIC_URL_BASE || "").split(",").map(s => s.trim()).filter(Boolean);
+  const base = bases[0] || `${req.protocol}://${req.get("host")}`;
 
   // return both (absolute for the UI, relative for internal use if needed)
   return res.json({ ok: true, url: `${base}${rel}`, path: rel });
