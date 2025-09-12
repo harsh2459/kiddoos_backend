@@ -52,8 +52,8 @@ export async function sendWithSender(senderId, { to, cc, bcc, subject, html, tex
 
   const mail = {
     from,
-    to:  asArray(to).join(", "),
-    cc:  asArray(cc).join(", "),
+    to: asArray(to).join(", "),
+    cc: asArray(cc).join(", "),
     bcc: asArray(bcc).join(", "),
     subject, text, html,
   };
@@ -66,8 +66,8 @@ export async function sendBySlug(slug, to, ctx = {}, opts = {}) {
   if (!tpl) throw new Error(`Template not found/inactive: ${slug}`);
 
   const rendered = renderTemplate({ subject: tpl.subject, text: tpl.text || "", html: tpl.html }, ctx);
-  const toAll  = [...asArray(tpl.alwaysTo), ...asArray(to)];
-  const ccAll  = [...asArray(tpl.alwaysCc), ...asArray(opts.cc)];
+  const toAll = [...asArray(tpl.alwaysTo), ...asArray(to)];
+  const ccAll = [...asArray(tpl.alwaysCc), ...asArray(opts.cc)];
   const bccAll = [...asArray(tpl.alwaysBcc), ...asArray(opts.bcc)];
 
   const senderId = tpl.mailSender?._id || opts.senderId;
@@ -77,7 +77,7 @@ export async function sendBySlug(slug, to, ctx = {}, opts = {}) {
     to: toAll, cc: ccAll, bcc: bccAll,
     subject: rendered.subject, html: rendered.html, text: rendered.text,
     fromEmail: tpl.fromEmail || opts.fromEmail,
-    fromName:  tpl.fromName  || opts.fromName,
+    fromName: tpl.fromName || opts.fromName,
   });
 }
 
@@ -98,8 +98,8 @@ export async function sendAbandonedCartEmail(customer, day = 1, extra = {}) {
     items_count: items.reduce((n, i) => n + Number(i.qty || 0), 0),
     subtotal: customer.cart?.totals?.subTotal ?? 0,
     grand_total: customer.cart?.totals?.grandTotal ?? 0,
-    cart_url: `${process.env.FRONTEND_URL || "http://localhost:3000"}/cart`,
-    checkout_url: `${process.env.FRONTEND_URL || "http://localhost:3000"}/checkout`,
+    cart_url: `${process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app/" || "http://localhost:3000"}/cart`,
+    checkout_url: `${process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app/" || "http://localhost:3000"}/checkout`,
     ...extra,
   };
 
