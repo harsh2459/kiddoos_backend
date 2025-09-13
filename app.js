@@ -14,7 +14,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
+app.set("trust proxy", 1); // so req.protocol = https on Render
+export const PUBLIC_BASES = (process.env.PUBLIC_URL_BASE || "")
+  .split(",").map(s => s.trim().replace(/\/+$/, "")).filter(Boolean);
 // Security
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },

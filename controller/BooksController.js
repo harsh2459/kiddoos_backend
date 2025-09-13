@@ -1,21 +1,17 @@
 import Book from "../model/Book.js";
 import slugify from "slugify";
+import { sanitizePathsToRelative } from "../utils/url.js";
+import { PUBLIC_BASES } from "../app.js";
 
-const toSlug = (s) =>
-  slugify(s || "book", { lower: true, strict: true, trim: true });
+const toSlug = (s) => slugify(s || "book", { lower: true, strict: true, trim: true });
 
 async function uniqueSlugFrom(title) {
   const base = toSlug(title);
   const rx = new RegExp(`^${base}(?:-(\\d+))?$`, "i");
   const rows = await Book.find({ slug: rx }).select("slug -_id").lean();
-
-  // nothing taken
   if (!rows.length) return base;
-
   const taken = new Set(rows.map(r => r.slug));
   if (!taken.has(base)) return base;
-
-  // find next free -N
   let n = 2;
   while (taken.has(`${base}-${n}`)) n++;
   return `${base}-${n}`;
@@ -57,9 +53,8 @@ export const getBook = async (req, res) => {
 
 export const createBook = async (req, res, next) => {
   try {
-    const body = req.body || {};
+    const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
     const slug = await uniqueSlugFrom(body.title || body.slug);
-
     const doc = await Book.create({ ...body, slug });
     res.json({ ok: true, book: doc });
   } catch (e) {
@@ -73,7 +68,7 @@ export const createBook = async (req, res, next) => {
 export const updateBook = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const body = { ...req.body };
+    const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
 
     if (typeof body.slug === "string" && body.slug.trim()) {
       const desired = toSlug(body.slug);
@@ -81,7 +76,7 @@ export const updateBook = async (req, res, next) => {
       if (exists) return res.status(409).json({ ok:false, error:"Slug already taken." });
       body.slug = desired;
     } else {
-      delete body.slug; // don’t accidentally blank it
+      delete body.slug;
     }
 
     const doc = await Book.findByIdAndUpdate(id, body, { new: true });
