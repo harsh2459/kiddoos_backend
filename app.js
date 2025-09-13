@@ -14,51 +14,34 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Security middleware
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-  })
-);
+// Security
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
 
-// Body parsing
+// Body
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ CORS setup
-const allowedOrigins = (process.env.CORS_ORIGIN || "")
+// CORS (avoid trailing slash origins)
+const origins = (process.env.CORS_ORIGIN || "")
   .split(",")
-  .map((s) => s.trim().replace(/\/+$/, ""))
+  .map(s => s.trim().replace(/\/+$/, ""))
   .filter(Boolean);
-
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    const o = origin.replace(/\/+$/, "");
-    if (allowedOrigins.includes(o)) return cb(null, true);
-    // allow vercel previews
-    if (/\.vercel\.app$/.test(new URL(origin).hostname)) return cb(null, true);
-    return cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-}));
+app.use(cors({ origin: origins.length ? origins : "*", credentials: false }));
 
 app.use(morgan("dev"));
 
-// Static files
+// Static
 app.use(
   "/public",
-  (req, res, next) => {
-    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-    next();
-  },
+  (req, res, next) => { res.setHeader("Cross-Origin-Resource-Policy", "cross-origin"); next(); },
   express.static(path.join(__dirname, "public"))
 );
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
-// Routes
+// routes
 import bookRoutes from "./routes/booksroute.js";
 import orderRoutes from "./routes/ordersroute.js";
 import paymentRoutes from "./routes/paymentsroute.js";
@@ -85,27 +68,23 @@ app.use("/api/uploads", uploadRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/settings", settingsRoutes);
 
-// 404 handler
+// 404
 app.use((req, res) => res.status(404).json({ ok: false, error: "Not found" }));
 
-// Error handler
+// error
 app.use((err, req, res, next) => {
   console.error(err);
-  res
-    .status(err.status || 500)
-    .json({ ok: false, error: err.message || "Server error" });
+  res.status(err.status || 500).json({ ok: false, error: err.message || "Server error" });
 });
 
 const start = async () => {
   const PORT = process.env.PORT || 5050;
-  await mongoose.connect(
-    process.env.MONGO_URI
-  );
-  console.log("✅ Mongo connected");
+  await mongoose.connect(process.env.MONGO_URI || "mongodb://127.0.0.1:27017/catalogue");
+  console.log("Mongo connected");
 
-  // Start abandoned-cart cron
+  // start abandoned-cart cron
   startAbandonedCron(app);
 
-  app.listen(PORT, () => console.log(`🚀 API listening on :${PORT}`));
+  app.listen(PORT, () => console.log("API listening on :" + PORT));
 };
 start();
