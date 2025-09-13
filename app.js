@@ -1,3 +1,4 @@
+// app.js
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -25,12 +26,28 @@ app.use(helmet({
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// CORS (avoid trailing slash origins)
-const origins = (process.env.CORS_ORIGIN || "")
-  .split(",")
-  .map(s => s.trim().replace(/\/+$/, ""))
-  .filter(Boolean);
-app.use(cors({ origin: origins.length ? origins : "*", credentials: false }));
+/** ---------- CORS that supports Vercel prod + previews + localhost ---------- */
+const allowListExact = new Set([
+  "https://kidoos-frontend.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5173"
+]);
+
+const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/i;
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Non-browser clients or same-origin
+    if (!origin) return cb(null, true);
+
+    if (allowListExact.has(origin) || vercelPreviewRegex.test(origin)) {
+      return cb(null, true);
+    }
+    return cb(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: false,         // set true only if you use cookies
+  optionsSuccessStatus: 204,
+}));
 
 app.use(morgan("dev"));
 
@@ -77,14 +94,11 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ ok: false, error: err.message || "Server error" });
 });
 
-const start = async () => {
-  const PORT = process.env.PORT || 5050;
+// ----- DB connect and cron start (no listen here) -----
+const ensureDb = (async () => {
   await mongoose.connect(process.env.MONGO_URI || "mongodb://127.0.0.1:27017/catalogue");
   console.log("Mongo connected");
-
-  // start abandoned-cart cron
   startAbandonedCron(app);
+})();
 
-  app.listen(PORT, () => console.log("API listening on :" + PORT));
-};
-start();
+export { app, ensureDb };
