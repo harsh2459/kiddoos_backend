@@ -8,7 +8,7 @@ const EmailTemplateSchema = new Schema(
 
     category: {
       type: String,
-      enum: ["abandoned_cart", "order", "shipping", "marketing", "misc"],
+      enum: ["abandoned_cart", "order", "shipping", "marketing", "misc" ,"other"],
       default: "misc",
       index: true,
     },
