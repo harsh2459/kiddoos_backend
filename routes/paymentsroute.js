@@ -1,12 +1,17 @@
 import { Router } from "express";
+import bodyParser from "body-parser";
 import { createRazorpayOrder, razorpayWebhook } from "../controller/paymentscontroller.js";
-// import express from "express";
 
 const router = Router();
+
+// Normal JSON route
 router.post("/razorpay/order", createRazorpayOrder);
 
-// IMPORTANT: webhook must use raw body, not JSON
-// router.post("/razorpay/webhook", express.raw({ type: "*/*" }), razorpayWebhook);
-router.post("/razorpay/webhook", razorpayWebhook);
+// Webhook must use RAW body (Buffer), not JSON
+router.post(
+  "/razorpay/webhook",
+  bodyParser.raw({ type: "*/*" }),   // <-- guarantees Buffer in req.body
+  razorpayWebhook
+);
 
 export default router;
