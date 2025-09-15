@@ -76,7 +76,7 @@ import mailSenderRoutes from "./routes/mailSenderRoutes.js";
 
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
-app.use("/api/auth/customer", customerRoutes);
+app.use("/api/customer", customerRoutes);
 app.use("/api/shipments", shipmentsRoutes);
 app.use("/api/shiprocket/profiles", shiprocketProfileRoutes);
 app.use("/api/shiprocket", shiprocketRoutes);

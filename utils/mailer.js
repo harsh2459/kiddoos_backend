@@ -9,7 +9,10 @@ function asArray(v) { if (!v) return []; return Array.isArray(v) ? v : [v]; }
 function renderString(tpl, ctx = {}) {
   if (!tpl) return "";
   return tpl.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_m, key) => {
-    const val = key.split(".").reduce((acc, k) => (acc && acc[k] !== undefined ? acc[k] : undefined), ctx);
+    const val = key.split(".").reduce(
+      (acc, k) => (acc != null && acc[k] !== undefined ? acc[k] : undefined),
+      ctx
+    );
     return (val === undefined || val === null) ? "" : String(val);
   });
 }
@@ -90,6 +93,7 @@ export async function sendAbandonedCartEmail(customer, day = 1, extra = {}) {
     lineTotal: (Number(i.unitPriceSnapshot || 0) * Number(i.qty || 0)),
   }));
 
+  const FRONTEND = process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app";
   const ctx = {
     day,
     name: customer.name || "there",
@@ -98,13 +102,13 @@ export async function sendAbandonedCartEmail(customer, day = 1, extra = {}) {
     items_count: items.reduce((n, i) => n + Number(i.qty || 0), 0),
     subtotal: customer.cart?.totals?.subTotal ?? 0,
     grand_total: customer.cart?.totals?.grandTotal ?? 0,
-    cart_url: `${process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app/" || "http://localhost:3000"}/cart`,
-    checkout_url: `${process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app/" || "http://localhost:3000"}/checkout`,
+    cart_url: `${FRONTEND}/cart`,
+    checkout_url: `${FRONTEND}/checkout`,
     ...extra,
   };
 
   const rendered = renderTemplate({ subject: t.subject, text: t.text || "", html: t.html }, ctx);
-  const senderId = t.mailSender || null;
+  const senderId = (t.mailSender && (t.mailSender._id || t.mailSender)) || null;
   if (!senderId) throw new Error("Abandoned template has no mailSender configured");
 
   return sendWithSender(senderId, {

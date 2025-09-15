@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import Customer from "../model/Customer.js";
 import Book from "../model/Book.js"; // used for price snapshot
 import { sendAbandonedCartEmail } from "../utils/mailer.js";
+const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "dev_email_otp_secret";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const JWT_EXPIRES_IN = "7d";
@@ -28,30 +29,46 @@ const publicCustomer = (c) => ({
    Auth
 -------------------------- */
 export const register = async (req, res) => {
-    try {
-        const { name, email, phone, password } = req.body;
-        if (!email && !phone) return res.status(400).json({ error: "Email or phone required" });
-        if (!password) return res.status(400).json({ error: "Password required" });
+  try {
+    const { name, email, phone, password, emailOtpTicket } = req.body;
+    if (!email && !phone) return res.status(400).json({ error: "Email or phone required" });
+    if (!password) return res.status(400).json({ error: "Password required" });
 
-        const exists = await Customer.findOne({
-            $or: [{ email: email?.toLowerCase() || "__" }, { phone: phone || "__" }],
-        });
-        if (exists) return res.status(409).json({ error: "Customer already exists" });
-
-        const passwordHash = await bcrypt.hash(password, 10);
-        const customer = await Customer.create({
-            name,
-            email: email?.toLowerCase() || undefined,
-            phone,
-            passwordHash,
-        });
-
-        const token = issueToken(customer);
-        res.status(201).json({ token, customer: publicCustomer(customer) });
-    } catch (err) {
-        console.error("register:", err);
-        res.status(500).json({ error: "Registration failed" });
+    // If registering with email, OTP ticket is mandatory
+    if (email) {
+      let payload;
+      try {
+        payload = jwt.verify(String(emailOtpTicket || ""), TICKET_SECRET);
+      } catch {
+        return res.status(400).json({ error: "Email not verified" });
+      }
+      if (!payload || String(payload.email).toLowerCase() !== String(email).toLowerCase()) {
+        return res.status(400).json({ error: "Email not verified" });
+      }
     }
+
+    // ensure unique
+    const exists = await Customer.findOne({
+      $or: [{ email: email?.toLowerCase() || "__" }, { phone: phone || "__" }],
+    });
+    if (exists) return res.status(409).json({ error: "Customer already exists" });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const customer = await Customer.create({
+      name,
+      email: email?.toLowerCase() || undefined,
+      phone,
+      passwordHash,
+      // mark verified if they passed the OTP ticket
+      emailVerifiedAt: email ? new Date() : null,
+    });
+
+    const token = issueToken(customer);
+    res.status(201).json({ token, customer: publicCustomer(customer) });
+  } catch (err) {
+    console.error("register:", err);
+    res.status(500).json({ error: "Registration failed" });
+  }
 };
 
 export const login = async (req, res) => {
