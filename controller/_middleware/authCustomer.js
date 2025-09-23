@@ -13,4 +13,5 @@ export default function authCustomer(req, res, next) {
   } catch {
     return res.status(401).json({ error: "Invalid token" });
   }
-}
+} 
+
