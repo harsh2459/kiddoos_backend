@@ -8,8 +8,8 @@ router.get("/:slug", optionalAuth, getBook);
 
 // Admin
 router.post("/", requireAuth(["admin", "editor"]), createBook);
-router.put("/:id", requireAuth(["admin", "editor"]), updateBook);
+router.patch("/:id", requireAuth(["admin", "editor"]), updateBook);
 router.delete("/:id", requireAuth(["admin"]), deleteBook);
 
 export default router;
-   
+    

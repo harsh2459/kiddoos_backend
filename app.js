@@ -73,7 +73,7 @@ import shipmentsRoutes from "./routes/shipmentsroute.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
 import mailSenderRoutes from "./routes/mailSenderRoutes.js";
-
+ 
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);

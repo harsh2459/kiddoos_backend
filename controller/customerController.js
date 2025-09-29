@@ -168,7 +168,7 @@ export const setCartItemQty = async (req, res) => {
     try {
         const { itemId, qty } = req.body; // itemId = _id of CartItem
         if (!itemId || qty == null) return res.status(400).json({ error: "itemId & qty required" });
-
+x
         const c = await Customer.findById(req.customerId);
         if (!c) return res.status(404).json({ error: "Not found" });
 

@@ -10,7 +10,7 @@ const BookSchema = new mongoose.Schema({
   language: { type: String, default: "English" },
   pages: Number,
   edition: String,
-  printType: { type: String, enum: ["paperback","hardcover","ebook"], default: "paperback" },
+  printType: { type: String, enum: ["paperback", "hardcover", "ebook"], default: "paperback" },
 
   mrp: { type: Number, required: true },
   price: { type: Number, required: true },
@@ -25,7 +25,7 @@ const BookSchema = new mongoose.Schema({
   },
 
   assets: {
-    coverUrl: String,        // /public/uploads/xxx.jpg or CDN
+    coverUrl: [String],        // /public/uploads/xxx.jpg or CDN
     samplePdfUrl: String
   },
 
@@ -33,7 +33,7 @@ const BookSchema = new mongoose.Schema({
   tags: [{ type: String, index: true }],
 
   descriptionHtml: String,
-  visibility: { type: String, enum: ["public","draft"], default: "public" }
+  visibility: { type: String, enum: ["public", "draft"], default: "public" }
 }, { timestamps: true });
 
 BookSchema.index({ title: "text", authors: "text", tags: "text" });

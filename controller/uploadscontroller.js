@@ -22,11 +22,15 @@ const storage = multer.diskStorage({
 export const upload = multer({ storage });
 
 export const uploadImage = (req, res) => {
-  if (!req.file) return res.status(400).json({ ok: false, error: "No file uploaded" });
+  if (!req.files || !req.files.length) {
+    return res.status(400).json({ ok: false, error: "No files uploaded" });
+  }
 
-  const relPath = `/public/uploads/${req.file.filename}`;
-  const previewUrl = toAbsolute(relPath, getBaseFromReq(req));
+  const results = req.files.map(file => {
+    const relPath = `/public/uploads/${file.filename}`;
+    const previewUrl = toAbsolute(relPath, getBaseFromReq(req));
+    return { path: relPath, previewUrl };
+  });
 
-  // IMPORTANT: the client should store `path` in DB, not `previewUrl`.
-  return res.json({ ok: true, path: relPath, previewUrl });
+  return res.json({ ok: true, images: results });
 };

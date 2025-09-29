@@ -54,6 +54,14 @@ export const getBook = async (req, res) => {
 export const createBook = async (req, res, next) => {
   try {
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
+
+    // Normalize coverUrl to array
+    if (typeof body.assets?.coverUrl === "string") {
+      body.assets.coverUrl = [body.assets.coverUrl];
+    } else if (!Array.isArray(body.assets?.coverUrl)) {
+      body.assets = { ...(body.assets || {}), coverUrl: [] };
+    }
+
     const slug = await uniqueSlugFrom(body.title || body.slug);
     const doc = await Book.create({ ...body, slug });
     res.json({ ok: true, book: doc });
@@ -61,28 +69,51 @@ export const createBook = async (req, res, next) => {
     if (e?.code === 11000) {
       return res.status(409).json({ ok: false, error: "A book with this title/slug already exists." });
     }
-    next(e);
+    return res.status(500).json({ ok: false, error: "Internal error", details: e.message });
   }
 };
 
 export const updateBook = async (req, res, next) => {
   try {
     const { id } = req.params;
+
+    // sanitize but don't invent fields that weren't sent
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
 
+    // ✅ Only normalize coverUrl IF it was provided in the request body
+    if (body.assets && Object.prototype.hasOwnProperty.call(body.assets, "coverUrl")) {
+      if (typeof body.assets.coverUrl === "string") {
+        body.assets.coverUrl = [body.assets.coverUrl];
+      } else if (!Array.isArray(body.assets.coverUrl)) {
+        // If the client explicitly sent a non-array (e.g. null), choose your behavior:
+        // either clear it…
+        body.assets.coverUrl = [];
+        // …or: delete body.assets.coverUrl to leave it unchanged
+        // delete body.assets.coverUrl;
+      }
+    } else if (body.assets && Object.keys(body.assets).length === 0) {
+      // If client sent an empty assets object, don't overwrite existing doc.assets
+      delete body.assets;
+    }
+
+    // slug handling (unchanged, just a tiny hardening)
     if (typeof body.slug === "string" && body.slug.trim()) {
       const desired = toSlug(body.slug);
       const exists = await Book.findOne({ slug: desired, _id: { $ne: id } }).select("_id");
-      if (exists) return res.status(409).json({ ok:false, error:"Slug already taken." });
+      if (exists) return res.status(409).json({ ok: false, error: "Slug already taken." });
       body.slug = desired;
     } else {
       delete body.slug;
     }
 
-    const doc = await Book.findByIdAndUpdate(id, body, { new: true });
-    res.json({ ok:true, book: doc });
+    const doc = await Book.findByIdAndUpdate(id, body, {
+      new: true,
+      runValidators: true, // keep enums etc. safe
+    });
+
+    res.json({ ok: true, book: doc });
   } catch (e) {
-    if (e?.code === 11000) return res.status(409).json({ ok:false, error:"Slug already taken." });
+    if (e?.code === 11000) return res.status(409).json({ ok: false, error: "Slug already taken." });
     next(e);
   }
 };
