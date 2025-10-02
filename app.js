@@ -73,7 +73,10 @@ import shipmentsRoutes from "./routes/shipmentsroute.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
 import mailSenderRoutes from "./routes/mailSenderRoutes.js";
- 
+import { exportBooks, importBooks } from "./controller/BooksController.js";
+import { requireAuth } from "./controller/_middleware/auth.js";
+import { uploadImage } from "./controller/uploadscontroller.js";
+
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);
@@ -87,6 +90,9 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/settings", settingsRoutes);
+
+app.post("/api/import", uploadImage, importBooks);
+app.get("/api/export", exportBooks);
 
 // 404
 app.use((req, res) => res.status(404).json({ ok: false, error: "Not found" }));
