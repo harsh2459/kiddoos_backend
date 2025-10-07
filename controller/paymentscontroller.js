@@ -1,96 +1,178 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
 import Order from "../model/Order.js";
+import Payment from "../model/Payment.js";
 import Setting from "../model/Setting.js";
 
-function sanitizeKeyId(s = '') { return s.trim().replace(/,$/, ''); } // drop a single trailing comma
-function sanitizeSecret(s = '') { return s.trim().replace(/,$/, ''); }
-
-function isValidKeyId(id) { return /^rzp_(test|live)_[A-Za-z0-9]+$/.test(id); }
-function isLikelySecret(s) { return /^[A-Za-z0-9_-]{16,64}$/.test(s); } // len heuristic
-
+// Fetch Razorpay credentials from DB settings
 async function getRazorpayCfg() {
-  const doc = await Setting.findOne({ key: "payments" }).lean();
-  const rp = (doc?.value?.providers || []).find(p => p.id === "razorpay");
-
-  const keyIdRaw = process.env.RAZORPAY_KEY_ID || rp?.config?.keyId || "rzp_live_wvJv0kOzLxc3R8";
-  const keySecretRaw = process.env.RAZORPAY_KEY_SECRET || rp?.config?.keySecret || "OnRs7f1fAqg66s";
-
-  const keyId = sanitizeKeyId(keyIdRaw);
-  const keySecret = sanitizeSecret(keySecretRaw);
-
-  if (!isValidKeyId(keyId) || !isLikelySecret(keySecret)) {
-    throw new Error("Invalid Razorpay credentials format (check for trailing commas/spaces and use correct mode).");
+  const setting = await Setting.findOne({ key: "payments" }).lean();
+  if (!setting?.value) {
+    throw new Error("No payments config found");
+  }
+  const rp = (setting.value.providers || []).find(
+    (p) => p.id === "razorpay" && p.enabled
+  );
+  if (!rp) {
+    throw new Error("Razorpay config missing or disabled");
+  }
+  const { keyId, keySecret } = rp.config || {};
+  if (!keyId || !keySecret) {
+    throw new Error("Razorpay keyId/keySecret missing in config");
   }
   return { keyId, keySecret };
 }
 
-function buildRazorpayClient(cfg) {
-  return new Razorpay({
-    key_id: cfg.keyId,       // <-- map camelCase → snake_case
-    key_secret: cfg.keySecret
-  });
-}
-
-function buildRP({ keyId, keySecret }) {
-  return new Razorpay({ key_id: keyId, key_secret: keySecret });
-}
-
-export const createRazorpayOrder = async (req, res, next) => {
+export const createRazorpayOrder = async (req, res) => {
   try {
-    const { amountInRupees, receipt, orderId } = req.body;
-    const amt = Math.round(Number(amountInRupees) * 100);
-    if (!amt || amt < 100) return res.status(400).json({ ok: false, error: "Invalid amount" });
-
-    const cfg = await getRazorpayCfg();
-    if (!cfg.keyId || !cfg.keySecret) {
-      return res.status(500).json({ ok: false, error: "Razorpay is not configured (keys missing)." });
+    console.log("Request body:", req.body);
+    const { amountInRupees, orderId, paymentType } = req.body;
+    if (!amountInRupees || !orderId || !paymentType) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Missing required fields" });
     }
 
-    const rp = buildRP(cfg);
-    const rpOrder = await rp.orders.create({
-      amount: amt,
+    // Load Razorpay credentials
+    const { keyId, keySecret } = await getRazorpayCfg();
+
+    // Convert rupees to paise
+    const fullPaise = Math.floor(Number(amountInRupees) * 100);
+
+    // Determine amount to charge now
+    let amountToCharge = fullPaise;
+    if (paymentType === "half_online_half_cod") {
+      amountToCharge = Math.floor(fullPaise / 2);
+    }
+
+    // Build a short receipt string under 40 chars
+    const shortId = String(orderId).slice(-8);    // last 8 of orderId
+    const ts = Date.now().toString().slice(-6);   // last 6 digits of timestamp
+    const receipt = `rcpt_${shortId}_${ts}`;      // e.g. "rcpt_ab12cd34_567890"
+
+    // Create Razorpay order
+    const rzp = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    const rpOrder = await rzp.orders.create({
+      amount: amountToCharge,
       currency: "INR",
-      receipt: receipt || `rcpt_${Date.now()}`
+      receipt
+    });
+    console.log("Razorpay order created:", rpOrder.id);
+
+    // Save payment record
+    const payment = await Payment.create({
+      orderId,
+      paymentType,
+      provider: "razorpay",
+      providerOrderId: rpOrder.id,
+      status: "created",
+      paidAmount: 0,
+      pendingAmount:
+        paymentType === "half_online_half_cod"
+          ? fullPaise - amountToCharge
+          : 0,
+      currency: rpOrder.currency,
+      rawResponse: rpOrder
     });
 
-    if (orderId) {
-      await Order.findByIdAndUpdate(orderId, {
-        "payment.provider": "razorpay",
-        "payment.orderId": rpOrder.id,
-        "payment.status": "created",
-        "payment.amount": rpOrder.amount,
-        "payment.currency": rpOrder.currency,
-      });
-    }
-
-    return res.json({ ok: true, order: rpOrder, key: cfg.keyId });
+    return res.json({
+      ok: true,
+      order: rpOrder,
+      key: keyId,
+      paymentId: payment._id
+    });
   } catch (e) {
-    if (e?.statusCode === 401) {
-      // Surface a clear message instead of generic 500
-      return res.status(401).json({ ok: false, error: "Razorpay Authentication failed. Check Key ID/Secret." });
-    }
-    next(e);
+    console.error("createRazorpayOrder error:", e);
+    return res.status(500).json({ ok: false, error: e.message });
   }
 };
 
-// webhook unchanged (but ensure body is RAW in the route)
-export const razorpayWebhook = async (req, res) => {
-  const signature = req.headers["x-razorpay-signature"];
-  const secret = (process.env.RAZORPAY_WEBHOOK_SECRET || "").trim();
+export const verifyPayment = async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentId } = req.body;
 
-  const expected = crypto.createHmac("sha256", secret).update(req.body).digest("hex");
-  if (signature !== expected) return res.status(400).send("Invalid signature");
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !paymentId)
+      return res.status(400).json({ ok: false, error: "Missing verification data" });
 
-  const event = JSON.parse(req.body.toString("utf8"));
-  if (event.event === "payment.captured") {
-    const payment = event.payload.payment?.entity;
-    if (payment?.order_id && payment?.id) {
-      await Order.findOneAndUpdate(
-        { "payment.orderId": payment.order_id },
-        { $set: { "payment.status": "paid", "payment.paymentId": payment.id, "payment.capturedAt": new Date(), status: "paid" } }
-      );
+    const payment = await Payment.findById(paymentId);
+    if (!payment) return res.status(404).json({ ok: false, error: "Payment not found" });
+
+    const { keySecret } = await getRazorpayCfg();
+    const generated_signature = crypto
+      .createHmac('sha256', keySecret)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (generated_signature !== razorpay_signature)
+      return res.status(400).json({ ok: false, error: "Invalid signature" });
+
+    // Update payment record
+    payment.providerPaymentId = razorpay_payment_id;
+    payment.paidAmount = payment.pendingAmount > 0 ? payment.pendingAmount : payment.paidAmount + payment.pendingAmount;
+
+    if (payment.paymentType === 'half_online_half_cod') {
+      payment.status = 'partially_paid';
+      payment.pendingAmount = payment.paidAmount; // Remaining half for COD
+    } else {
+      payment.status = 'paid';
+      payment.pendingAmount = 0;
     }
+
+    payment.paidAt = new Date();
+    payment.verifiedAt = new Date();
+    await payment.save();
+
+    // Update order status
+    await Order.findByIdAndUpdate(payment.orderId, {
+      status: payment.status === 'paid' ? 'confirmed' : 'partially_paid'
+    });
+
+    res.json({ ok: true, verified: true, payment });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
-  res.json({ ok: true });
+};
+
+// Simplified webhook for now (add WebhookEvent model later if needed)
+export const razorpayWebhook = async (req, res) => {
+  try {
+    const signature = req.headers["x-razorpay-signature"];
+
+    if (!signature) {
+      return res.status(400).send("Missing signature");
+    }
+
+    const { keySecret } = await getRazorpayCfg();
+    const expected = crypto.createHmac("sha256", keySecret)
+      .update(req.body)
+      .digest("hex");
+
+    if (signature !== expected) {
+      console.error("Invalid webhook signature");
+      return res.status(400).send("Invalid signature");
+    }
+
+    const event = JSON.parse(req.body.toString("utf8"));
+
+    if (event.event === "payment.captured") {
+      const paymentEntity = event.payload.payment?.entity;
+      if (paymentEntity?.order_id && paymentEntity?.id) {
+        await Payment.findOneAndUpdate(
+          { providerOrderId: paymentEntity.order_id },
+          {
+            $set: {
+              status: "captured",
+              providerPaymentId: paymentEntity.id,
+              paidAt: new Date()
+            }
+          }
+        );
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Webhook processing error:", error);
+    res.status(500).json({ ok: false, error: "Processing failed" });
+  }
 };
