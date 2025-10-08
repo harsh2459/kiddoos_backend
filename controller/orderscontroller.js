@@ -1,9 +1,8 @@
 import mongoose from "mongoose";
 import Order from "../model/Order.js";
 import Customer from "../model/Customer.js";
-import { createSrForOrder, findSrOwnerUserId } from "./_services/srOrdershelper.js";
 import { sendBySlug } from "../utils/mailer.js";
-
+import { createBdForOrder, findBdOwnerUserId } from './_services/bdOrdershelper.js'
 
 export async function onOrderPaid(order) {
   try {
@@ -102,19 +101,7 @@ export async function createOrder(req, res, next) {
           }
         }
 
-        // 3) SR creation (your existing logic)
-        try {
-          let ownerId;
-          try { ownerId = await findSrOwnerUserId(); } catch { }
-          if (ownerId) {
-            await createSrForOrder(order._id, ownerId);
-            if (process.env.SR_AUTO_ASSIGN_AWB === "1") {
-              // optionally assign AWB here
-            }
-          }
-        } catch (e) {
-          console.error("Auto SR create failed", e);
-        }
+  
 
       } catch (e) {
         console.error("post-create hooks failed", e);

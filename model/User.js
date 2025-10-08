@@ -9,7 +9,7 @@ const ShiprocketProfileSchema = new mongoose.Schema({
   defaults: {
     weight: { type: Number, default: 0.5 },
     length: { type: Number, default: 20 },
-    breadth:{ type: Number, default: 15 },
+    breadth: { type: Number, default: 15 },
     height: { type: Number, default: 3 }
   },
   auth: {
@@ -23,14 +23,14 @@ const UserSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true, sparse: true },
   passwordHash: String,
-  role: { type: String, enum: ["admin","editor","customer"], default: "admin" },
+  role: { type: String, enum: ["admin", "editor", "customer"], default: "admin" },
   isActive: { type: Boolean, default: true },
 
   // keep old single-integration for backward compat (optional)
   integrations: {
-    shiprocket: {
-      // legacy fields can remain if you want; new code uses profiles[]
-      profiles: [ShiprocketProfileSchema]
+    bluedart: {
+      active: Boolean,
+      customerCode: String
     }
   }
 }, { timestamps: true });

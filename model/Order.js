@@ -80,8 +80,8 @@ const OrderSchema = new Schema({
 
     provider: { type: String, default: null }, // e.g., "shiprocket"
 
-    sr: {
-      orderId:    String,                     // SR order_id
+    bd: {
+      orderId:    String,                     // BD order_id
       shipmentId: { type: String, index: true },
       awb:        { type: String, index: true },
       courier:    String,

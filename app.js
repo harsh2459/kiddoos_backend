@@ -67,8 +67,7 @@ import paymentRoutes from "./routes/paymentsroute.js";
 import uploadRoutes from "./routes/uploadsroute.js";
 import authRoutes from "./routes/authroute.js";
 import settingsRoutes from "./routes/settingsroute.js";
-import shiprocketRoutes from "./routes/shiprocketroute.js";
-import shiprocketProfileRoutes from "./routes/shiprocketprofileroute.js";
+import bluedartRoute from './routes/bluedartroute.js';
 import shipmentsRoutes from "./routes/shipmentsroute.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
@@ -76,21 +75,20 @@ import mailSenderRoutes from "./routes/mailSenderRoutes.js";
 import { exportBooks, importBooks } from "./controller/BooksController.js";
 import { requireAuth } from "./controller/_middleware/auth.js";
 import { uploadImage } from "./controller/uploadscontroller.js";
-
+import { onOrderPaid } from './controller/orderscontroller.js';
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);
 app.use("/api/customer", customerRoutes);
 app.use("/api/shipments", shipmentsRoutes);
-app.use("/api/shiprocket/profiles", shiprocketProfileRoutes);
-app.use("/api/shiprocket", shiprocketRoutes);
+app.use("/api/bluedart", bluedartRoute);
 app.use("/api/books", bookRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/settings", settingsRoutes);
-
+app.post('/api/orders/place', onOrderPaid);
 app.post("/api/import", uploadImage, importBooks);
 app.get("/api/export", exportBooks);
 
