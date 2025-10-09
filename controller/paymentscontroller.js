@@ -4,62 +4,41 @@ import Order from "../model/Order.js";
 import Payment from "../model/Payment.js";
 import Setting from "../model/Setting.js";
 
-// Fetch Razorpay credentials from DB settings
 async function getRazorpayCfg() {
   const setting = await Setting.findOne({ key: "payments" }).lean();
-  if (!setting?.value) {
-    throw new Error("No payments config found");
-  }
-  const rp = (setting.value.providers || []).find(
-    (p) => p.id === "razorpay" && p.enabled
-  );
-  if (!rp) {
-    throw new Error("Razorpay config missing or disabled");
-  }
+  if (!setting?.value) throw new Error("No payments config found");
+  const rp = (setting.value.providers || []).find(p => p.id === "razorpay" && p.enabled);
+  if (!rp) throw new Error("Razorpay config missing or disabled");
   const { keyId, keySecret } = rp.config || {};
-  if (!keyId || !keySecret) {
-    throw new Error("Razorpay keyId/keySecret missing in config");
-  }
+  if (!keyId || !keySecret) throw new Error("Razorpay keyId/keySecret missing");
   return { keyId, keySecret };
 }
 
 export const createRazorpayOrder = async (req, res) => {
   try {
-    console.log("Request body:", req.body);
     const { amountInRupees, orderId, paymentType } = req.body;
     if (!amountInRupees || !orderId || !paymentType) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Missing required fields" });
+      return res.status(400).json({ ok: false, error: "Missing required fields" });
     }
 
-    // Load Razorpay credentials
     const { keyId, keySecret } = await getRazorpayCfg();
-
-    // Convert rupees to paise
     const fullPaise = Math.floor(Number(amountInRupees) * 100);
-
-    // Determine amount to charge now
     let amountToCharge = fullPaise;
     if (paymentType === "half_online_half_cod") {
       amountToCharge = Math.floor(fullPaise / 2);
     }
 
-    // Build a short receipt string under 40 chars
-    const shortId = String(orderId).slice(-8);    // last 8 of orderId
-    const ts = Date.now().toString().slice(-6);   // last 6 digits of timestamp
-    const receipt = `rcpt_${shortId}_${ts}`;      // e.g. "rcpt_ab12cd34_567890"
+    const shortId = String(orderId).slice(-8);
+    const ts = Date.now().toString().slice(-6);
+    const receipt = `rcpt_${shortId}_${ts}`;
 
-    // Create Razorpay order
     const rzp = new Razorpay({ key_id: keyId, key_secret: keySecret });
     const rpOrder = await rzp.orders.create({
       amount: amountToCharge,
       currency: "INR",
       receipt
     });
-    console.log("Razorpay order created:", rpOrder.id);
 
-    // Save payment record
     const payment = await Payment.create({
       orderId,
       paymentType,
@@ -67,20 +46,12 @@ export const createRazorpayOrder = async (req, res) => {
       providerOrderId: rpOrder.id,
       status: "created",
       paidAmount: 0,
-      pendingAmount:
-        paymentType === "half_online_half_cod"
-          ? fullPaise - amountToCharge
-          : 0,
+      pendingAmount: paymentType === "half_online_half_cod" ? fullPaise - amountToCharge : 0,
       currency: rpOrder.currency,
       rawResponse: rpOrder
     });
 
-    return res.json({
-      ok: true,
-      order: rpOrder,
-      key: keyId,
-      paymentId: payment._id
-    });
+    return res.json({ ok: true, order: rpOrder, key: keyId, paymentId: payment._id });
   } catch (e) {
     console.error("createRazorpayOrder error:", e);
     return res.status(500).json({ ok: false, error: e.message });
@@ -90,7 +61,6 @@ export const createRazorpayOrder = async (req, res) => {
 export const verifyPayment = async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentId } = req.body;
-
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !paymentId)
       return res.status(400).json({ ok: false, error: "Missing verification data" });
 
@@ -106,45 +76,48 @@ export const verifyPayment = async (req, res) => {
     if (generated_signature !== razorpay_signature)
       return res.status(400).json({ ok: false, error: "Invalid signature" });
 
-    // Update payment record
+    // Update payment
     payment.providerPaymentId = razorpay_payment_id;
-    payment.paidAmount = payment.pendingAmount > 0 ? payment.pendingAmount : payment.paidAmount + payment.pendingAmount;
-
+    const totalAmount = payment.paidAmount + payment.pendingAmount;
+    
     if (payment.paymentType === 'half_online_half_cod') {
+      payment.paidAmount = Math.floor(totalAmount / 2);
+      payment.pendingAmount = totalAmount - payment.paidAmount;
       payment.status = 'partially_paid';
-      payment.pendingAmount = payment.paidAmount; // Remaining half for COD
     } else {
-      payment.status = 'paid';
+      payment.paidAmount = totalAmount;
       payment.pendingAmount = 0;
+      payment.status = 'paid';
     }
 
     payment.paidAt = new Date();
     payment.verifiedAt = new Date();
     await payment.save();
 
-    // Update order status
-    await Order.findByIdAndUpdate(payment.orderId, {
-      status: payment.status === 'paid' ? 'confirmed' : 'partially_paid'
-    });
+    // Update order status - NO AUTO SHIPMENT CREATION
+    const order = await Order.findByIdAndUpdate(
+      payment.orderId, 
+      { 
+        status: payment.status === 'paid' ? 'confirmed' : 'partially_paid',
+        'payment.status': payment.status
+      },
+      { new: true }
+    );
 
-    res.json({ ok: true, verified: true, payment });
+    res.json({ ok: true, verified: true, payment, order });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 };
 
-// Simplified webhook for now (add WebhookEvent model later if needed)
 export const razorpayWebhook = async (req, res) => {
   try {
     const signature = req.headers["x-razorpay-signature"];
-
-    if (!signature) {
-      return res.status(400).send("Missing signature");
-    }
+    if (!signature) return res.status(400).send("Missing signature");
 
     const { keySecret } = await getRazorpayCfg();
     const expected = crypto.createHmac("sha256", keySecret)
-      .update(req.body)
+      .update(JSON.stringify(req.body))
       .digest("hex");
 
     if (signature !== expected) {
@@ -152,8 +125,7 @@ export const razorpayWebhook = async (req, res) => {
       return res.status(400).send("Invalid signature");
     }
 
-    const event = JSON.parse(req.body.toString("utf8"));
-
+    const event = req.body;
     if (event.event === "payment.captured") {
       const paymentEntity = event.payload.payment?.entity;
       if (paymentEntity?.order_id && paymentEntity?.id) {

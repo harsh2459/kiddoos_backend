@@ -1,167 +1,415 @@
+import crypto from 'crypto';
 import mongoose from "mongoose";
 import Order from "../model/Order.js";
 import Customer from "../model/Customer.js";
 import { sendBySlug } from "../utils/mailer.js";
-import { createBdForOrder, findBdOwnerUserId } from './_services/bdOrdershelper.js'
 
 export async function onOrderPaid(order) {
   try {
     const customer = await Customer.findById(order.customerId);
     if (!customer) return;
 
-    // stop abandoned program and clear cart after successful order (optional)
+    // Clear cart after successful order
     customer.resetAbandonedProgram("order placed");
     customer.cart.items = [];
     customer.cart.totals = { subTotal: 0, taxAmount: 0, shippingAmount: 0, grandTotal: 0 };
     customer.cart.expiresAt = null;
     await customer.save();
 
-    // Send order email (make sure template with slug "order_paid" exists and is linked to a MailSender)
+    // Send order email
     await sendBySlug("order_paid", customer.email, {
       name: customer.name || "there",
       order_id: order._id,
       amount: order.totals?.grandTotal || order.amount,
       items: order.items?.length || 0,
-      order_date: new Date(order.createdAt).toLocaleString("en-IN"),
+      order_date: new Date(order.createdAt).toLocaleDateString('en-IN'),
     });
+
   } catch (e) {
-    console.error("order-paid-email-failed:", e?.message || e);
+    console.error("order-paid-email-failed", e?.message || e);
   }
 }
 
 export async function createOrder(req, res, next) {
   try {
-    const b = req.body || {};
-    const items = Array.isArray(b.items) ? b.items.map(i => ({
-      bookId: i.bookId,
-      qty: Math.max(1, Number(i.qty || 1)),
-      unitPrice: Number(i.unitPrice ?? i.price ?? 0)
-    })) : [];
+    let { customerId, customer, items, shipping, payment, totals, amount, currency } = req.body;
+    
+    // ✅ Handle both customerId (existing) and customer object (guest)
+    if (!customerId && customer) {
+      // Create or find customer first
+      let existingCustomer = await Customer.findOne({
+        $or: [
+          { phone: customer.phone },
+          ...(customer.email ? [{ email: customer.email }] : [])
+        ].filter(Boolean)
+      });
+      
+      if (!existingCustomer) {
+        // ✅ Create guest customer with simple password hash
+        const tempPassword = crypto.randomBytes(8).toString('hex');
+        const passwordHash = crypto.createHash('sha256').update(tempPassword).digest('hex');
 
-    if (!items.length) {
-      return res.status(400).json({ ok: false, error: "items required" });
+        existingCustomer = new Customer({
+          name: customer.name || "",
+          email: customer.email || "",
+          phone: customer.phone || "",
+          passwordHash, // ✅ Required field for schema
+          isGuest: true,
+          emailVerified: false
+        });
+        
+        await existingCustomer.save();
+        console.log('✅ Created guest customer:', existingCustomer._id);
+      }
+      
+      customerId = existingCustomer._id;
+    }
+    
+    if (!customerId || !items?.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing customer information or items"
+      });
     }
 
-    const amount = items.reduce((s, i) => s + i.qty * i.unitPrice, 0);
+    // ✅ FIXED: Map payment status correctly
+    let paymentStatus = "pending"; // Default
+    if (payment?.status === "created") {
+      paymentStatus = "pending"; // Map "created" to "pending"
+    } else if (["pending", "paid", "failed"].includes(payment?.status)) {
+      paymentStatus = payment.status; // Valid enum values
+    }
 
-    const shipping = {
-      name: b.shipping?.name || b.customer?.name || "",
-      phone: b.shipping?.phone || b.customer?.phone || "",
-      email: (b.shipping?.email || b.customer?.email || "").toLowerCase(),
-      address: b.shipping?.address || b.shipping?.address1 || "",
-      city: b.shipping?.city || "",
-      state: b.shipping?.state || "",
-      pincode: b.shipping?.pincode || b.shipping?.postalCode || "",
-      weight: Number(b.shipping?.weight ?? 0.5),
-      length: Number(b.shipping?.length ?? 20),
-      breadth: Number(b.shipping?.breadth ?? 15),
-      height: Number(b.shipping?.height ?? 3),
+    // ✅ FIXED: Create order with schema-compliant structure
+    const orderData = {
+      userId: customerId, // ✅ Schema uses userId, not customerId
+      items: items.map(item => ({
+        bookId: item.bookId || item._id,
+        qty: Number(item.qty) || 1,
+        unitPrice: Number(item.price) || 0 // ✅ Required unitPrice field
+      })),
+      amount: amount || totals?.grandTotal || 0,
+      taxAmount: totals?.taxAmount || 0,
+      shippingAmount: totals?.shippingAmount || 0,
+      
+      // ✅ FIXED: Payment object with correct enum values
+      payment: {
+        provider: payment?.provider || "razorpay",
+        mode: "full", // Default mode
+        status: paymentStatus, // ✅ Valid enum: ["pending", "paid", "failed"]
+        orderId: payment?.orderId || "",
+        paymentId: payment?.paymentId || "",
+        signature: payment?.signature || "",
+        paidAmount: 0,
+        dueAmount: amount || totals?.grandTotal || 0,
+        dueOnDeliveryAmount: 0,
+        codSettlementStatus: "na"
+      },
+      
+      email: customer?.email || "",
+      phone: customer?.phone || "",
+      
+      // ✅ FIXED: Shipping structure
+      shipping: {
+        name: customer?.name || "",
+        phone: customer?.phone || "",
+        email: customer?.email || "",
+        address: shipping?.address1 || "",
+        city: shipping?.city || "",
+        state: shipping?.state || "",
+        pincode: shipping?.postalCode || "",
+        country: shipping?.country || "India",
+        
+        // Initialize shipping provider data
+        provider: null,
+        bd: {
+          codAmount: 0,
+          logs: []
+        }
+      },
+      
+      status: "pending", // ✅ Valid enum: ["pending", "paid", "shipped", "delivered", "refunded"]
+      transactions: []
     };
 
-    const order = await Order.create({
-      items,
-      amount,
-      email: shipping.email,
-      phone: shipping.phone,
-      shipping,
-      status: "pending",
-      payment: { provider: "razorpay", status: "pending" }
+    const order = new Order(orderData);
+    
+    // ✅ Apply payment mode logic from schema methods
+    if (payment?.method === "half_online_half_cod") {
+      order.applyPaymentMode("half");
+    } else {
+      order.applyPaymentMode("full");
+    }
+    
+    await order.save();
+    
+    console.log('✅ Order created:', order._id);
+    
+    // ✅ Return in the format your frontend expects
+    res.json({
+      ok: true,
+      order,
+      orderId: order._id,
+      _id: order._id  // Fallback for compatibility
     });
-
-    // fire-and-forget: clear cart (if a customer exists) + send order mail + create SR
-    setImmediate(async () => {
-      try {
-        // 1) link customer by auth or email, then clear cart + stop abandoned program
-        let customer = null;
-        if (req.customerId) {
-          customer = await Customer.findById(req.customerId);
-        } else if (shipping.email) {
-          customer = await Customer.findOne({ email: shipping.email });
-        }
-
-        if (customer) {
-          customer.cart.items = [];
-          customer.cart.totals = { subTotal: 0, taxAmount: 0, shippingAmount: 0, grandTotal: 0 };
-          customer.cart.lastActivityAt = new Date();
-          customer.cart.expiresAt = null;
-          customer.resetAbandonedProgram("order placed");
-          await customer.save();
-        }
-
-        // 2) send order confirmation (needs an active template with slug "order_placed")
-        if (shipping.email) {
-          try {
-            await sendBySlug("order_placed", shipping.email, {
-              name: shipping.name || "",
-              order_id: order._id,
-              amount: order.amount ?? amount,
-            });
-          } catch (e) {
-            console.warn("order email failed:", e.message);
-          }
-        }
-
-  
-
-      } catch (e) {
-        console.error("post-create hooks failed", e);
-      }
-    });
-
-    res.json({ ok: true, orderId: order._id });
-  } catch (e) { next(e); }
+    
+  } catch (e) {
+    console.error("❌ Create order error:", e);
+    next(e);
+  }
 }
 
-
-export const listOrders = async (req, res, next) => {
+export async function listOrders(req, res, next) {
   try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 20)));
-    const q = String(req.query.q || "").trim();
-    const status = String(req.query.status || "").trim();
-
-    const where = {};
-    if (status) where.status = status;
+    const { q = "", status = "", page = 1, limit = 20 } = req.query;
+    
+    // Build filter object
+    let filter = {};
+    
     if (q) {
-      where.$or = [
-        (mongoose.isValidObjectId(q) ? { _id: q } : null),
-        { email: new RegExp(q, "i") },
-        { "shipping.phone": new RegExp(q, "i") },
-        { "shipping.name": new RegExp(q, "i") }
-      ].filter(Boolean);
+      const searchRegex = new RegExp(q, 'i');
+      filter.$or = [
+        { '_id': { $regex: searchRegex } },
+        { 'items.title': { $regex: searchRegex } }
+      ];
+    }
+    
+    if (status) {
+      filter.status = status;
     }
 
-    const total = await Order.countDocuments(where);
-    const items = await Order.find(where)
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Get orders with customer details
+    const orders = await Order.find(filter)
+      .populate('userId', 'name email phone') // ✅ Fixed: userId not customerId
       .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
+      .skip(skip)
+      .limit(parseInt(limit));
 
-    res.json({ ok: true, items, total, page, limit });
-  } catch (e) { next(e); }
-};
+    // Get total count for pagination
+    const total = await Order.countDocuments(filter);
+    
+    res.json({
+      ok: true,
+      orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+    
+  } catch (e) {
+    console.error("❌ List orders error:", e);
+    next(e);
+  }
+}
 
-export const updateOrderStatus = async (req, res) => {
-  const { status } = req.body;
-  const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
-  if (!order) return res.status(404).json({ ok: false, error: "Not found" });
-  res.json({ ok: true, order });
-};
-
-// DELETE /orders/:id
-export const deleteOrder = async (req, res) => {
+export async function getOrder(req, res, next) {
   try {
     const { id } = req.params;
-    // Optionally verify req.user owns this order or has admin rights
-    const order = await Order.findById(id);
-    if (!order) {
-      return res.status(404).json({ ok: false, error: "Order not found" });
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid order ID format"
+      });
     }
-    await Order.deleteOne({ _id: id });
-    return res.json({ ok: true, message: "Order deleted successfully" });
+
+    const order = await Order.findById(id)
+      .populate('userId', 'name email phone');
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        error: "Order not found"
+      });
+    }
+
+    res.json({
+      ok: true,
+      order
+    });
+    
   } catch (e) {
-    console.error("deleteOrder error:", e);
-    return res.status(500).json({ ok: false, error: e.message });
+    console.error("❌ Get order error:", e);
+    next(e);
   }
-};
+}
+
+export async function updateOrder(req, res, next) {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid order ID format"
+      });
+    }
+
+    // Remove fields that shouldn't be updated directly
+    delete updateData._id;
+    delete updateData.userId;
+    delete updateData.createdAt;
+
+    const order = await Order.findByIdAndUpdate(
+      id, 
+      { 
+        ...updateData,
+        updatedAt: new Date()
+      }, 
+      { new: true }
+    ).populate('userId', 'name email phone');
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        error: "Order not found"
+      });
+    }
+
+    // If order status changed to paid, trigger paid logic
+    if (updateData.status === 'paid') {
+      await onOrderPaid(order);
+    }
+
+    res.json({
+      ok: true,
+      order
+    });
+    
+  } catch (e) {
+    console.error("❌ Update order error:", e);
+    next(e);
+  }
+}
+
+export async function deleteOrder(req, res, next) {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid order ID format"
+      });
+    }
+
+    const order = await Order.findByIdAndDelete(id);
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        error: "Order not found"
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: "Order deleted successfully",
+      deletedOrder: order
+    });
+    
+  } catch (e) {
+    console.error("❌ Delete order error:", e);
+    next(e);
+  }
+}
+
+// Export additional helper functions
+export async function getOrdersByCustomer(req, res, next) {
+  try {
+    const { customerId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    
+    if (!mongoose.Types.ObjectId.isValid(customerId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid customer ID format"
+      });
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const orders = await Order.find({ userId: customerId }) // ✅ Fixed: userId
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Order.countDocuments({ userId: customerId }); // ✅ Fixed: userId
+    
+    res.json({
+      ok: true,
+      orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+    
+  } catch (e) {
+    console.error("❌ Get orders by customer error:", e);
+    next(e);
+  }
+}
+
+export async function updateOrderStatus(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid order ID format"
+      });
+    }
+
+    const validStatuses = ['pending', 'paid', 'shipped', 'delivered', 'refunded']; // ✅ Schema enum
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid status. Must be one of: " + validStatuses.join(', ')
+      });
+    }
+
+    const order = await Order.findByIdAndUpdate(
+      id,
+      {
+        status,
+        ...(notes && { notes }),
+        updatedAt: new Date()
+      },
+      { new: true }
+    ).populate('userId', 'name email phone');
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        error: "Order not found"
+      });
+    }
+
+    // Trigger specific actions based on status
+    if (status === 'paid') {
+      await onOrderPaid(order);
+    }
+
+    res.json({
+      ok: true,
+      order,
+      message: `Order status updated to ${status}`
+    });
+    
+  } catch (e) {
+    console.error("❌ Update order status error:", e);
+    next(e);
+  }
+}

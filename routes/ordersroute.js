@@ -1,11 +1,14 @@
 import { Router } from "express";
-import { createOrder, listOrders, updateOrderStatus ,deleteOrder } from "../controller/orderscontroller.js";
+import { createOrder, listOrders, updateOrder, deleteOrder, onOrderPaid } from "../controller/orderscontroller.js";
 import { requireAuth } from "../controller/_middleware/auth.js";
 const router = Router();
 
 router.post("/", createOrder);
-router.get("/", requireAuth(["admin","editor"]), listOrders);
-router.put("/:id/status", requireAuth(["admin","editor"]), updateOrderStatus);
+router.get("/", requireAuth(["admin", "editor"]), listOrders);
+router.put("/:id/status", requireAuth(["admin", "editor"]), updateOrder);
 router.delete("/:id", deleteOrder);
+
+// Internal: Order paid callback
+router.post('/paid', onOrderPaid);
 
 export default router;

@@ -76,6 +76,9 @@ import { exportBooks, importBooks } from "./controller/BooksController.js";
 import { requireAuth } from "./controller/_middleware/auth.js";
 import { uploadImage } from "./controller/uploadscontroller.js";
 import { onOrderPaid } from './controller/orderscontroller.js';
+import blueDartProfileRoute from './routes/blueDartProfileRoute.js';
+
+app.use("/api/bluedart-profiles", blueDartProfileRoute);
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);
