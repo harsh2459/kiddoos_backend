@@ -1,32 +1,34 @@
-import User from '../../model/User.js';
-import Order from '../../model/Order.js';
-import BlueDartProfile from '../../model/BlueDartProfile.js';
+// backend/controller/_services/bdOrdershelper.js
+import User from '../../../model/User.js';
+import Order from '../../../model/Order.js';
+import BlueDartProfile from '../../../model/BlueDartProfile.js';
 import { createWaybill, trackShipment } from './bluedart.js';
 
+/**
+ * Find Blue Dart owner user ID
+ */
 export async function findBdOwnerUserId() {
   // Try to find admin with active Blue Dart integration first
-  let u = await User.findOne({
-    role: 'admin',
-    'integrations.bluedart.active': true
+  let u = await User.findOne({ 
+    role: 'admin', 
+    'integrations.bluedart.active': true 
   }).select('_id').lean();
   
-  if (u?._id) {
-    return u._id;
-  }
-  
-  // ✅ QUIET FALLBACK: Find any admin user (reduced logging)
+  if (u?._id) return u._id;
+
+  // Fallback: Find any admin user
   u = await User.findOne({ role: 'admin' }).select('_id').lean();
   
   if (u?._id) {
-    // ✅ Only log once per server restart
     if (!global.bluedartWarningShown) {
       console.log('⚠️  Blue Dart integration not configured, using fallback admin');
       global.bluedartWarningShown = true;
     }
     return u._id;
   }
-  
-  u = await User.findOne({}).select('_id').lean();
+
+  // Last resort: Find any user
+  u = await User.findOne().select('_id').lean();
   
   if (u?._id) {
     if (!global.bluedartWarningShown) {
@@ -35,140 +37,245 @@ export async function findBdOwnerUserId() {
     }
     return u._id;
   }
-  
+
   throw new Error('No users found in database');
 }
 
+/**
+ * Get BlueDart profile or defaults
+ */
 async function getProfileOrDefaults(profileId) {
   if (profileId) {
-    const profile = await BlueDartProfile.findById(profileId);
-    if (profile) return profile;
+    const profile = await BlueDartProfile.findById(profileId).lean();
+    if (profile) {
+      return profile;
+    }
   }
 
-  // Get default profile
-  const defaultProfile = await BlueDartProfile.findOne({ isDefault: true });
-  if (defaultProfile) return defaultProfile;
+  // Try to get default profile
+  const defaultProfile = await BlueDartProfile.findOne({ isDefault: true }).lean();
+  if (defaultProfile) {
+    return defaultProfile;
+  }
 
-  // Return env defaults
-  return {
-    defaults: {
-      weight: process.env.BD_DEF_WEIGHT || 0.5,
-      length: process.env.BD_DEF_LENGTH || 20,
-      breadth: process.env.BD_DEF_BREADTH || 15,
-      height: process.env.BD_DEF_HEIGHT || 3
-    }
-  };
+  // Get any profile
+  const anyProfile = await BlueDartProfile.findOne().lean();
+  if (anyProfile) {
+    return anyProfile;
+  }
+
+  throw new Error('No BlueDart profile found. Please create one first.');
 }
 
-async function logBD(orderId, type, reqPayload, resPayload, error) {
-  await Order.updateOne(
-    { _id: orderId },
-    {
-      $push: {
-        'shipping.bd.logs': {
-          type,
-          at: new Date(),
-          request: reqPayload ?? null,
-          response: resPayload ?? null,
-          error: error ? String(error?.message || error) : null
-        }
-      }
-    }
-  );
+/**
+ * Calculate COD amount for partial payments
+ * @param {Object} order - Order object
+ * @returns {number} - COD amount to collect
+ */
+function calculateCODAmount(order) {
+  const totalAmount = order.totalAmount || 0;
+  const paidAmount = order.paidAmount || 0;
+  const paymentStatus = order.paymentStatus;
+
+  // If partially paid, COD = remaining amount
+  if (paymentStatus === 'partially_paid') {
+    const codAmount = totalAmount - paidAmount;
+    console.log(`💰 Order ${order.orderNumber}: Partial payment - Total: ₹${totalAmount}, Paid: ₹${paidAmount}, COD: ₹${codAmount}`);
+    return codAmount > 0 ? Math.round(codAmount * 100) / 100 : 0;
+  }
+
+  // If fully paid online, no COD
+  if (paymentStatus === 'paid') {
+    console.log(`💳 Order ${order.orderNumber}: Fully paid online - COD: ₹0`);
+    return 0;
+  }
+
+  // If not paid (COD order), collect full amount
+  if (paymentStatus === 'pending') {
+    console.log(`💵 Order ${order.orderNumber}: Full COD - Amount: ₹${totalAmount}`);
+    return Math.round(totalAmount * 100) / 100;
+  }
+
+  return 0;
 }
 
-/** Create Blue Dart shipment for order with COD support */
-export async function createBdForOrder(orderId, ownerUserId, profileId = null) {
-  const order = await Order.findById(orderId).lean();
-  if (!order) throw new Error('Order not found');
+/**
+ * Determine product code based on payment status
+ * @param {Object} order - Order object
+ * @returns {string} - 'A' for prepaid, 'D' for COD
+ */
+function getProductCode(order) {
+  const codAmount = calculateCODAmount(order);
 
-  if (order?.shipping?.bd?.awbNumber) {
-    return { skipped: true, reason: 'Shipment already created' };
+  // If there's any COD amount to collect, use COD product
+  if (codAmount > 0) {
+    return 'D'; // COD product
   }
 
-  const profile = await getProfileOrDefaults(profileId);
-  const ship = order.shipping || {};
+  // Fully paid online
+  return 'A'; // Prepaid product
+}
 
-  // Determine product code based on payment type
-  let productCode = 'A'; // Prepaid by default
-  let codAmount = 0;
-
-  if (order.payment?.paymentType === 'half_online_half_cod') {
-    productCode = 'D'; // COD
-    codAmount = order.payment?.pendingAmount || Math.floor((order.totals?.grandTotal || order.amount) / 2);
-  } else if (order.payment?.paymentType === 'full_cod') {
-    productCode = 'D'; // COD
-    codAmount = order.totals?.grandTotal || order.amount;
-  }
-
-  const payload = {
-    consigner: {
-      name: process.env.BD_CONSIGNER_NAME || 'Your Company',
-      address: process.env.BD_CONSIGNER_ADDRESS || '',
-      city: process.env.BD_CONSIGNER_CITY || '',
-      pincode: process.env.BD_CONSIGNER_PINCODE || '',
-      phone: process.env.BD_CONSIGNER_PHONE || '',
-    },
-    consignee: {
-      name: ship.name || 'Customer',
-      address: ship.address || '',
-      city: ship.city || '',
-      state: ship.state || '',
-      pincode: ship.pincode || '',
-      phone: ship.phone || '',
-      email: ship.email || '',
-    },
-    productCode, // A=Prepaid, D=COD
-    pieces: [{
-      weight: Number(ship.weight || profile.defaults?.weight || 0.5),
-      length: Number(ship.length || profile.defaults?.length || 20),
-      breadth: Number(ship.breadth || profile.defaults?.breadth || 15),
-      height: Number(ship.height || profile.defaults?.height || 3),
-      declaredValue: order.totals?.grandTotal || order.amount || 0
-    }],
-    orderNumber: String(order._id),
-    invoiceValue: order.totals?.grandTotal || order.amount || 0,
-    codAmount: codAmount, // COD amount if applicable
-  };
-
+/**
+ * Create BlueDart shipment for an order
+ * @param {Object} order - Order object
+ * @param {Object} profile - BlueDart profile with credentials
+ * @returns {Object} - Shipment details with AWB
+ */
+export async function createBdForOrder(order, profile) {
   try {
-    const data = await createWaybill(payload);
-    const awbNumber = data?.awbNumber || data?.AWBNumber || '';
+    // Calculate COD amount
+    const codAmount = calculateCODAmount(order);
+    const productCode = getProductCode(order);
 
-    await Order.updateOne(
-      { _id: order._id },
-      {
-        $set: {
-          'shipping.provider': 'bluedart',
-          'shipping.bd.profileId': profileId,
-          'shipping.bd.awbNumber': awbNumber,
-          'shipping.bd.status': 'created',
-          'shipping.bd.productCode': productCode,
-          'shipping.bd.codAmount': codAmount,
-          'shipping.bd.createdAt': new Date(),
-          'shipping.bd.lastCreateResp': data
-        }
-      }
+    console.log(`📦 Creating shipment for order ${order.orderNumber}:`, {
+      paymentStatus: order.paymentStatus,
+      totalAmount: order.totalAmount,
+      paidAmount: order.paidAmount,
+      codAmount,
+      productCode
+    });
+
+    // Prepare waybill payload
+    const payload = {
+      orderNumber: order.orderNumber || order._id.toString(),
+      invoiceNumber: order.invoiceNumber || order.orderNumber || order._id.toString(),
+      invoiceValue: order.totalAmount || 0,
+      codAmount: codAmount, // ← IMPORTANT: Send remaining amount as COD
+      productCode: productCode, // 'D' if COD amount > 0, else 'A'
+      productType: 2,
+      customerCode: profile.consigner?.customerCode || profile.clientName || '',
+
+      // Consigner (your business address)
+      consigner: {
+        name: profile.consigner?.name || 'Store',
+        address: profile.consigner?.address || '',
+        address2: profile.consigner?.address2 || '',
+        address3: profile.consigner?.address3 || '',
+        city: profile.consigner?.city || '',
+        state: profile.consigner?.state || '',
+        pincode: profile.consigner?.pincode || '',
+        phone: profile.consigner?.phone || '',
+        mobile: profile.consigner?.mobile || profile.consigner?.phone || '',
+        email: profile.consigner?.email || ''
+      },
+
+      // Consignee (customer address)
+      consignee: {
+        name: order.shippingAddress?.name || order.customerName || 'Customer',
+        address: order.shippingAddress?.address || '',
+        address2: order.shippingAddress?.address2 || '',
+        address3: order.shippingAddress?.landmark || '',
+        city: order.shippingAddress?.city || '',
+        state: order.shippingAddress?.state || '',
+        pincode: order.shippingAddress?.pincode || '',
+        phone: order.shippingAddress?.phone || '',
+        mobile: order.shippingAddress?.mobile || order.shippingAddress?.phone || '',
+        email: order.customerEmail || ''
+      },
+
+      // Package details
+      pieces: [{
+        weight: profile.defaults?.weight || 0.5,
+        length: profile.defaults?.length || 20,
+        breadth: profile.defaults?.breadth || 15,
+        height: profile.defaults?.height || 3,
+        volumetricWeight: ((profile.defaults?.length || 20) * (profile.defaults?.breadth || 15) * (profile.defaults?.height || 3)) / 5000
+      }],
+
+      pickupDate: `/Date(${Date.now()})/`,
+      pickupTime: '1600',
+      remarks: codAmount > 0 ? `Partial payment. Collect ₹${codAmount} as COD.` : 'Prepaid shipment',
+      commodityDetail: 'General Goods'
+    };
+
+    // Create waybill with BlueDart
+    const result = await createWaybill(
+      payload,
+      profile.clientName, // LoginID
+      profile.shippingKey  // LicenseKey
     );
 
-    await logBD(order._id, 'waybill.create', payload, data, null);
-    return { created: true, awbNumber, productCode, codAmount };
+    return {
+      success: true,
+      awbNumber: result.awbNumber,
+      tokenNumber: result.tokenNumber,
+      codAmount: codAmount,
+      productCode: productCode,
+      destinationArea: result.destinationArea,
+      destinationLocation: result.destinationLocation
+    };
 
-  } catch (e) {
-    await Order.updateOne(
-      { _id: order._id },
-      {
-        $set: {
-          'shipping.bd.createStatus': 'failed',
-          'shipping.bd.createError': e.response?.data || e.message
-        }
-      }
-    );
-    await logBD(order._id, 'waybill.create', payload, e.response?.data, e);
-    throw e;
+  } catch (error) {
+    console.error(`❌ Failed to create shipment for ${order.orderNumber}:`, error.message);
+    return {
+      success: false,
+      error: error.message
+    };
   }
 }
 
-export async function trackBdAwb(awbNumber) {
-  return trackShipment(awbNumber);
+/**
+ * Track BlueDart AWB
+ * @param {string} awbNumber - AWB number to track
+ * @param {string} profileId - BlueDart profile ID
+ * @returns {Object} - Tracking details
+ */
+export async function trackBdAwb(awbNumber, profileId) {
+  try {
+    const profile = await getProfileOrDefaults(profileId);
+
+    const result = await trackShipment(
+      awbNumber,
+      profile.clientName, // LoginID
+      profile.trackingKey || profile.shippingKey // Use trackingKey if available, fallback to shippingKey
+    );
+
+    return {
+      success: true,
+      tracking: result
+    };
+
+  } catch (error) {
+    console.error(`❌ Failed to track AWB ${awbNumber}:`, error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Create shipments for multiple orders
+ * @param {Array} orders - Array of order objects
+ * @param {Object} profile - BlueDart profile
+ * @returns {Object} - Results with success and failed arrays
+ */
+export async function createBulkShipments(orders, profile) {
+  const results = {
+    success: [],
+    failed: []
+  };
+
+  for (const order of orders) {
+    const result = await createBdForOrder(order, profile);
+
+    if (result.success) {
+      results.success.push({
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        awbNumber: result.awbNumber,
+        codAmount: result.codAmount,
+        productCode: result.productCode
+      });
+    } else {
+      results.failed.push({
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        error: result.error
+      });
+    }
+  }
+
+  return results;
 }
