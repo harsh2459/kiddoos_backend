@@ -23,7 +23,7 @@ async function getJWTToken() {
 
   try {
     console.log('🔄 Generating new JWT token...');
-    
+
     if (!CONSUMER_KEY || !CONSUMER_SECRET) {
       throw new Error('BLUEDART_CONSUMER_KEY and BLUEDART_CONSUMER_SECRET must be set in environment variables');
     }
@@ -46,7 +46,7 @@ async function getJWTToken() {
     jwtToken = data.JWTToken;
     // Token valid for 24 hours, set expiry
     tokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    
+
     console.log('✅ JWT token generated successfully');
     return jwtToken;
   } catch (error) {
@@ -76,7 +76,7 @@ async function getAuthHeaders() {
 export async function createWaybill(payload, loginId, licenseKey) {
   try {
     const headers = await getAuthHeaders();
-    
+
     // Build APIGEE-compliant request body
     const requestBody = {
       Request: {
@@ -167,7 +167,7 @@ export async function createWaybill(payload, loginId, licenseKey) {
     };
   } catch (error) {
     console.error('❌ BlueDart createWaybill error:', error.response?.data || error.message);
-    
+
     // Handle token expiry - retry once
     if (error.response?.status === 401) {
       console.log('🔄 Token expired, regenerating and retrying...');
@@ -176,7 +176,7 @@ export async function createWaybill(payload, loginId, licenseKey) {
       // Retry once with new token
       return createWaybill(payload, loginId, licenseKey);
     }
-    
+
     throw new Error(`BlueDart API Error: ${error.response?.data?.Status || error.message}`);
   }
 }
@@ -214,14 +214,14 @@ export async function trackShipment(awbNumber, loginId, licenseKey) {
     return data;
   } catch (error) {
     console.error('❌ BlueDart trackShipment error:', error.response?.data || error.message);
-    
+
     // Handle token expiry
     if (error.response?.status === 401) {
       jwtToken = null;
       tokenExpiry = null;
       return trackShipment(awbNumber, loginId, licenseKey);
     }
-    
+
     throw new Error(`BlueDart Tracking Error: ${error.response?.data?.message || error.message}`);
   }
 }
@@ -299,13 +299,13 @@ export async function schedulePickup(pickupData, loginId, licenseKey) {
     };
   } catch (error) {
     console.error('❌ BlueDart schedulePickup error:', error.response?.data || error.message);
-    
+
     if (error.response?.status === 401) {
       jwtToken = null;
       tokenExpiry = null;
       return schedulePickup(pickupData, loginId, licenseKey);
     }
-    
+
     throw new Error(`BlueDart Pickup Error: ${error.response?.data?.Status || error.message}`);
   }
 }
@@ -344,16 +344,33 @@ export async function cancelPickup(cancelData, loginId, licenseKey) {
     return data;
   } catch (error) {
     console.error('❌ BlueDart cancelPickup error:', error.response?.data || error.message);
-    
+
     if (error.response?.status === 401) {
       jwtToken = null;
       tokenExpiry = null;
       return cancelPickup(cancelData, loginId, licenseKey);
     }
-    
+
     throw new Error(`BlueDart Cancel Error: ${error.response?.data?.message || error.message}`);
   }
 }
+export async function cancelShipment(...args) {
+  // If you already have a cancelPickup, just call it here:
+  return await cancelPickup(...args);
+}
+export async function generateLabel(awbNumber, loginId, licenseKey) {
+  // Real API endpoint for label generation (PDF): 
+  // `${BASE_URL}/in/transportation/label/v1/GenerateLabel`
+  // This is a stub; you will need to fill in actual payload/data structure as per API docs.
+  return { success: true, label: `Label for AWB ${awbNumber}` };
+}
 
+// Generate invoice PDF (dummy implementation)
+export async function generateInvoice(awbNumber, loginId, licenseKey) {
+  // Real API endpoint for invoice generation (PDF): 
+  // `${BASE_URL}/in/transportation/invoice/v1/GenerateInvoice`
+  // This is a stub; you will need to match actual API payload structure.
+  return { success: true, invoice: `Invoice for AWB ${awbNumber}` };
+}
 // Export JWT token function for testing/debugging
 export { getJWTToken };

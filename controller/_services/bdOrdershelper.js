@@ -1,7 +1,7 @@
 // backend/controller/_services/bdOrdershelper.js
-import User from '../../../model/User.js';
-import Order from '../../../model/Order.js';
-import BlueDartProfile from '../../../model/BlueDartProfile.js';
+import User from '../../model/User.js';
+import Order from '../../model/Order.js';
+import BlueDartProfile from '../../model/BlueDartProfile.js';
 import { createWaybill, trackShipment } from './bluedart.js';
 
 /**

@@ -4,8 +4,9 @@ import jwt from "jsonwebtoken";
 import Customer from "../model/Customer.js";
 import Book from "../model/Book.js"; // used for price snapshot
 import { sendAbandonedCartEmail } from "../utils/mailer.js";
-const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "dev_email_otp_secret";
 
+
+const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "dev_email_otp_secret";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const JWT_EXPIRES_IN = "7d";
 
@@ -311,4 +312,3 @@ export const runAbandonedCartSweep = async () => {
 
     return { sent: dueToSend.length, expired: toExpire.length };
 };
-

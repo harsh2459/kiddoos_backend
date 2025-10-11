@@ -6,10 +6,8 @@ import XLSX from "xlsx"; // For parsing Excel files
 import fs from "fs";
 import path from "path";
 
-
 // Function to generate a unique slug for a book title
 const toSlug = (s) => slugify(s || "book", { lower: true, strict: true, trim: true });
-
 
 // Import books from Excel file
 export const importBooks = async (req, res) => {
