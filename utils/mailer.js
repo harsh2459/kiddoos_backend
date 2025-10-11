@@ -93,7 +93,7 @@ export async function sendAbandonedCartEmail(customer, day = 1, extra = {}) {
     lineTotal: (Number(i.unitPriceSnapshot || 0) * Number(i.qty || 0)),
   }));
 
-  const FRONTEND = process.env.FRONTEND_URL || "https://kidoos-frontend.vercel.app";
+  const FRONTEND = process.env.FRONTEND_URL;
   const ctx = {
     day,
     name: customer.name || "there",
