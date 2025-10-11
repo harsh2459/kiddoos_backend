@@ -107,7 +107,7 @@ app.use((err, req, res, next) => {
 
 // ----- DB connect and cron start (no listen here) -----
 const ensureDb = (async () => {
-  await mongoose.connect(process.env.MONGO_URI || "mongodb://127.0.0.1:27017/catalogue");
+  await mongoose.connect(process.env.MONGO_URI);
   console.log("Mongo connected");
   startAbandonedCron(app);
 })();
