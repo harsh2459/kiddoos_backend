@@ -32,10 +32,11 @@ app.use(express.urlencoded({ extended: true }));
 const allowListExact = new Set([
   "https://kidoos-frontend.vercel.app",
   "http://localhost:3000",
-  "http://localhost:5173"
+  "http://localhost:5173",
+  "https://kiddosintellect.com"
 ]);
 
-const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/i;
+const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/;
 
 app.use(cors({
   origin: (origin, cb) => {
