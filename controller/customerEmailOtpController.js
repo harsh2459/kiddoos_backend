@@ -4,7 +4,7 @@ import EmailOTP from "../model/EmailOTP.js";
 import { sendBySlug, sendWithSender } from "../utils/mailer.js";
 
 const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "dev_email_otp_secret";
-const TICKET_TTL_MIN = Number(process.env.EMAIL_OTP_TICKET_TTL_MIN || 15);  // short-lived ticket
+const TICKET_TTL_MIN = Number(process.env.EMAIL_OTP_TICKET_TTL_MIN || 15);
 const OTP_TTL_MIN = Number(process.env.EMAIL_OTP_TTL_MIN || 10);
 const MAX_ATTEMPTS = Number(process.env.EMAIL_OTP_MAX_ATTEMPTS || 5);
 const MAX_RESENDS  = Number(process.env.EMAIL_OTP_MAX_RESENDS  || 3);

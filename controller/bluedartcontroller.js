@@ -1,548 +1,467 @@
-// controller/bluedartcontroller.js
+// backend/controller/bluedartController.js
+
 import Order from '../model/Order.js';
 import BlueDartProfile from '../model/BlueDartProfile.js';
-import { createBdForOrder, trackBdAwb, findBdOwnerUserId } from './_services/bdOrdershelper.js';
-import { trackShipment, schedulePickup, cancelShipment, generateLabel, generateInvoice } from './_services/bluedart.js'; // ✅ FIXED: Added generateLabel and generateInvoice
+import BlueDartAPI from './_services/bluedart-api.js';
 
-// Admin: Get orders ready for shipment
-export const getOrdersForShipment = async (req, res, next) => {
+// ✅ 1. CREATE SHIPMENT (EXISTING)
+export const createShipment = async (req, res) => {
   try {
-    const orders = await Order.find({
-      status: 'confirmed',
-      'shipping.bd.awbNumber': { $exists: false }
-    })
-      .populate('userId', 'name email phone')
-      .sort({ createdAt: -1 })
-      .lean();
-    res.json({ ok: true, orders });
-  } catch (e) {
-    console.error("getOrdersForShipment error:", e);
-    next(e);
-  }
-};
-
-// Admin: Get all orders with shipment status
-export const getAllOrdersWithShipment = async (req, res, next) => {
-  try {
-    const { status, search } = req.query;
-    const query = {};
-
-    if (status === 'shipped') {
-      query['shipping.bd.awbNumber'] = { $exists: true };
-    } else if (status === 'ready') {
-      query.status = 'confirmed';
-      query['shipping.bd.awbNumber'] = { $exists: false };
-    } else if (status === 'all') {
-      // No filter
-    } else if (status) {
-      query.status = status;
-    }
-
-    if (search) {
-      query.$or = [
-        { 'shipping.name': { $regex: search, $options: 'i' } },
-        { 'shipping.phone': { $regex: search, $options: 'i' } },
-        { 'shipping.bd.awbNumber': { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const orders = await Order.find(query)
-      .populate('userId', 'name email phone')
-      .sort({ createdAt: -1 })
-      .lean();
-    res.json({ ok: true, orders, count: orders.length });
-  } catch (e) {
-    console.error("getAllOrdersWithShipment error:", e);
-    next(e);
-  }
-};
-
-// Admin: Create shipments in bulk
-export const bdCreateOrders = async (req, res, next) => {
-  try {
-    const { orderIds = [], profileId } = req.body || {};
-
-    if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return res.status(400).json({ ok: false, error: 'orderIds array required' });
-    }
-
-    // Verify orders exist and are in correct status
-    const orders = await Order.find({
-      _id: { $in: orderIds }
-    }).lean();
-
-    if (orders.length !== orderIds.length) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Some order IDs are invalid'
-      });
-    }
-
-    const readyOrders = await Order.find({
-      _id: { $in: orderIds },
-      status: 'confirmed',
-      paymentStatus: { $in: ['paid', 'pending', 'partially_paid'] }, // ← ADD 'partially_paid'
-      'bluedart.awb': { $exists: false }
-    });
-
-    // Check if orders are in correct status
-    const invalidOrders = orders.filter(o =>
-      !['confirmed', 'paid', 'partially_paid'].includes(o.status)
-    );
-
-    if (invalidOrders.length > 0) {
-      return res.status(400).json({
-        ok: false,
-        error: `Orders must be confirmed/paid. Invalid orders: ${invalidOrders.map(o => o._id).join(', ')}`
-      });
-    }
-
-    // Find owner user
-    let ownerId;
-    try {
-      ownerId = await findBdOwnerUserId();
-    } catch (e) {
-      console.error('⚠️ Blue Dart owner lookup failed:', e.message);
-      return res.status(400).json({
-        ok: false,
-        error: 'Blue Dart integration not configured. Please set up admin user with Blue Dart access.'
-      });
-    }
-
-    const success = [];
-    const failed = [];
-
-    for (const orderId of orderIds) {
-      try {
-        const result = await createBdForOrder(orderId, ownerId, profileId);
-        success.push({ orderId, ...result });
-
-        // Update order status to shipped if shipment created
-        if (result.created) {
-          await Order.updateOne(
-            { _id: orderId },
-            { $set: { status: 'shipped' } }
-          );
-        }
-      } catch (err) {
-        console.error(`Failed to create shipment for ${orderId}:`, err);
-        failed.push({ orderId, error: err.message || String(err) });
-      }
-    }
-
-    res.json({
-      ok: true,
-      success,
-      failed,
-      summary: {
-        total: orderIds.length,
-        successful: success.length,
-        failed: failed.length
-      }
-    });
-  } catch (e) {
-    console.error("bdCreateOrders error:", e);
-    next(e);
-  }
-};
-
-// Admin: Track AWB
-export const bdTrackAwb = async (req, res, next) => {
-  try {
-    const { awb } = req.params;
-
-    if (!awb) {
-      return res.status(400).json({ ok: false, error: 'AWB number required' });
-    }
-
-    const data = await trackBdAwb(awb);
-
-    // Update order with tracking info
-    await Order.updateOne(
-      { 'shipping.bd.awbNumber': awb },
-      {
-        $set: {
-          'shipping.bd.lastTracking': data,
-          'shipping.bd.status': data?.status || data?.shipment_status || 'unknown',
-          'shipping.bd.lastTrackedAt': new Date()
-        }
-      }
-    );
-
-    res.json({ ok: true, tracking: data, awb });
-  } catch (e) {
-    console.error("bdTrackAwb error:", e);
-    // Return error details to frontend
-    res.status(500).json({
-      ok: false,
-      error: e.message || 'Tracking failed',
-      details: e.response?.data || null
-    });
-  }
-};
-
-// Admin: Bulk track multiple AWBs
-export const bdBulkTrack = async (req, res, next) => {
-  try {
-    const { awbs = [] } = req.body;
-
-    if (!Array.isArray(awbs) || awbs.length === 0) {
-      return res.status(400).json({ ok: false, error: 'AWB array required' });
-    }
-
-    const results = [];
-
-    for (const awb of awbs) {
-      try {
-        const data = await trackBdAwb(awb);
-        await Order.updateOne(
-          { 'shipping.bd.awbNumber': awb },
-          {
-            $set: {
-              'shipping.bd.lastTracking': data,
-              'shipping.bd.status': data?.status || 'unknown',
-              'shipping.bd.lastTrackedAt': new Date()
-            }
-          }
-        );
-        results.push({ awb, ok: true, data });
-      } catch (e) {
-        results.push({ awb, ok: false, error: e.message });
-      }
-    }
-
-    res.json({ ok: true, results });
-  } catch (e) {
-    console.error("bdBulkTrack error:", e);
-    next(e);
-  }
-};
-
-// Admin: Schedule pickup
-export const bdSchedulePickup = async (req, res, next) => {
-  try {
-    const { orderIds = [], pickupDate, pickupAddress } = req.body || {};
-
-    if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return res.status(400).json({ ok: false, error: 'orderIds required' });
-    }
-
-    const orders = await Order.find({
-      _id: { $in: orderIds },
-      'shipping.bd.awbNumber': { $exists: true }
-    }).lean();
-
-    if (!orders.length) {
-      return res.status(400).json({ ok: false, error: 'No orders with AWBs found' });
-    }
-
-    const awbs = orders.map(o => o.shipping.bd.awbNumber).filter(Boolean);
-    if (awbs.length === 0) {
-      return res.status(400).json({ ok: false, error: 'No valid AWB numbers found' });
-    }
-
-    // ✅ FIXED: Get profile to pass keys
-    const order = orders[0];
-    const profileId = order.shipping?.bd?.profileId;
-    const profile = profileId
-      ? await BlueDartProfile.findById(profileId)
-      : await BlueDartProfile.findOne({ isDefault: true });
-
-    const pickupData = {
-      awbs,
-      pickupDate: pickupDate || new Date().toISOString().split('T')[0],
-      pickupAddress: pickupAddress || profile?.consigner?.address || process.env.BD_CONSIGNER_ADDRESS || ''
-    };
-
-    // ✅ FIXED: Pass keys to schedulePickup
-    const data = await schedulePickup(
-      pickupData,
-      profile?.shippingKey || process.env.BLUEDART_SHIPPING_KEY,
-      profile?.clientName || process.env.BLUEDART_CLIENT_NAME
-    );
-
-    // Update orders with pickup info
-    await Order.updateMany(
-      { _id: { $in: orderIds } },
-      {
-        $set: {
-          'shipping.bd.pickupScheduledAt': new Date(pickupData.pickupDate),
-          'shipping.bd.pickupStatus': 'scheduled',
-          'shipping.bd.lastPickupResp': data
-        }
-      }
-    );
-
-    res.json({ ok: true, data, scheduledAwbs: awbs, count: awbs.length });
-  } catch (e) {
-    console.error("bdSchedulePickup error:", e);
-    res.status(500).json({
-      ok: false,
-      error: e.message || 'Pickup scheduling failed',
-      details: e.response?.data || null
-    });
-  }
-};
-
-// Admin: Cancel shipments
-export const bdCancelShipment = async (req, res, next) => {
-  try {
-    const { orderIds = [] } = req.body || {};
-
-    if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return res.status(400).json({ ok: false, error: 'orderIds required' });
-    }
-
-    const orders = await Order.find({
-      _id: { $in: orderIds },
-      'shipping.bd.awbNumber': { $exists: true }
-    }).lean();
-
-    if (!orders.length) {
-      return res.status(400).json({ ok: false, error: 'No orders with AWBs found' });
-    }
-
-    const results = [];
-
-    for (const o of orders) {
-      try {
-        // ✅ FIXED: Get profile and pass keys
-        const profileId = o.shipping?.bd?.profileId;
-        const profile = profileId
-          ? await BlueDartProfile.findById(profileId)
-          : await BlueDartProfile.findOne({ isDefault: true });
-
-        const data = await cancelShipment(
-          o.shipping.bd.awbNumber,
-          profile?.shippingKey || process.env.BLUEDART_SHIPPING_KEY,
-          profile?.clientName || process.env.BLUEDART_CLIENT_NAME
-        );
-
-        await Order.updateOne(
-          { _id: o._id },
-          {
-            $set: {
-              'shipping.bd.status': 'cancelled',
-              'shipping.bd.canceledAt': new Date(),
-              'shipping.bd.cancelResponse': data,
-              status: 'cancelled'
-            }
-          }
-        );
-
-        results.push({
-          orderId: o._id,
-          awb: o.shipping.bd.awbNumber,
-          ok: true,
-          data
-        });
-      } catch (e) {
-        console.error(`Cancel failed for order ${o._id}:`, e);
-        results.push({
-          orderId: o._id,
-          awb: o.shipping?.bd?.awbNumber,
-          ok: false,
-          error: e.message || String(e)
-        });
-      }
-    }
-
-    res.json({ ok: true, results });
-  } catch (e) {
-    console.error("bdCancelShipment error:", e);
-    next(e);
-  }
-};
-
-// Admin: Update shipment weight/dimensions before creating shipment
-export const bdUpdateShipmentDetails = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const { weight, length, breadth, height } = req.body;
+    const { orderId, profileId } = req.body;
 
     if (!orderId) {
-      return res.status(400).json({ ok: false, error: 'orderId required' });
+      return res.status(400).json({ ok: false, error: 'Order ID required' });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId).populate('shippingAddress items.product');
     if (!order) {
       return res.status(404).json({ ok: false, error: 'Order not found' });
     }
 
-    // Check if shipment already created
-    if (order.shipping?.bd?.awbNumber) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Cannot update dimensions after shipment is created',
-        awbNumber: order.shipping.bd.awbNumber
-      });
+    const profile = await BlueDartProfile.findById(profileId || order.blueDartProfile);
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Blue Dart profile not found' });
     }
 
-    // Validate dimensions
-    const updates = {};
-    if (weight && weight > 0) updates['shipping.weight'] = Number(weight);
-    if (length && length > 0) updates['shipping.length'] = Number(length);
-    if (breadth && breadth > 0) updates['shipping.breadth'] = Number(breadth);
-    if (height && height > 0) updates['shipping.height'] = Number(height);
+    const waybillData = {
+      consigner: profile.consigner,
+      consignee: {
+        name: order.shippingAddress.fullName,
+        address: order.shippingAddress.address,
+        address2: order.shippingAddress.area || '',
+        address3: order.shippingAddress.city || '',
+        pincode: order.shippingAddress.pincode,
+        phone: order.shippingAddress.phone || '',
+        mobile: order.shippingAddress.mobile,
+        email: order.shippingAddress.email || ''
+      },
+      productCode: order.paymentStatus === 'pending' ? 'D' : 'A',
+      weight: order.totalWeight || 0.5,
+      declaredValue: order.totalAmount,
+      codAmount: order.paymentStatus === 'pending' ? order.totalAmount : 0
+    };
 
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ ok: false, error: 'No valid dimensions provided' });
+    const result = await BlueDartAPI.createWaybill(waybillData);
+
+    if (!result.success) {
+      return res.status(400).json({ ok: false, error: 'Failed to create waybill' });
     }
 
-    await Order.updateOne({ _id: orderId }, { $set: updates });
-    const updatedOrder = await Order.findById(orderId);
+    // Update order
+    await Order.findByIdAndUpdate(orderId, {
+      $set: {
+        'shipping.blueDart': {
+          awbNumber: result.awbNumber,
+          tokenNumber: result.tokenNumber,
+          codAmount: result.codAmount,
+          productCode: waybillData.productCode,
+          status: 'Booked',
+          createdAt: new Date()
+        }
+      }
+    });
 
     res.json({
       ok: true,
-      message: 'Dimensions updated successfully',
-      order: updatedOrder
+      message: 'Shipment created successfully',
+      data: {
+        awbNumber: result.awbNumber,
+        tokenNumber: result.tokenNumber,
+        codAmount: result.codAmount
+      }
     });
-  } catch (e) {
-    console.error("bdUpdateShipmentDetails error:", e);
-    next(e);
+  } catch (error) {
+    console.error('Create shipment error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
-// Admin: Get shipment statistics
-export const bdGetStats = async (req, res, next) => {
+// ✅ 2. TRACK SHIPMENT (EXISTING)
+export const trackShipment = async (req, res) => {
   try {
-    const stats = await Order.aggregate([
-      {
-        $facet: {
-          readyForShipment: [
-            { $match: { status: 'confirmed', 'shipping.bd.awbNumber': { $exists: false } } },
-            { $count: 'count' }
-          ],
-          shipped: [
-            { $match: { 'shipping.bd.awbNumber': { $exists: true } } },
-            { $count: 'count' }
-          ],
-          delivered: [
-            { $match: { status: 'delivered' } },
-            { $count: 'count' }
-          ],
-          cancelled: [
-            { $match: { 'shipping.bd.status': 'cancelled' } },
-            { $count: 'count' }
-          ],
-          pendingPickup: [
-            {
-              $match: {
-                'shipping.bd.awbNumber': { $exists: true },
-                'shipping.bd.pickupStatus': { $ne: 'completed' }
-              }
-            },
-            { $count: 'count' }
-          ]
-        }
-      }
-    ]);
+    const { awbNo } = req.params;
 
-    const result = {
-      readyForShipment: stats[0].readyForShipment[0]?.count || 0,
-      shipped: stats[0].shipped[0]?.count || 0,
-      delivered: stats[0].delivered[0]?.count || 0,
-      cancelled: stats[0].cancelled[0]?.count || 0,
-      pendingPickup: stats[0].pendingPickup[0]?.count || 0
+    if (!awbNo) {
+      return res.status(400).json({ ok: false, error: 'AWB number required' });
+    }
+
+    const result = await BlueDartAPI.trackShipment(awbNo);
+
+    res.json({ ok: result.success, data: result });
+  } catch (error) {
+    console.error('Track error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// ✅ 3. PROFILE MANAGEMENT (EXISTING)
+export const getProfiles = async (req, res) => {
+  try {
+    const profiles = await BlueDartProfile.find({ isActive: true });
+    res.json({ ok: true, data: profiles });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+export const createProfile = async (req, res) => {
+  try {
+    const { label, clientName, shippingKey, trackingKey, consigner, defaults, isDefault } = req.body;
+
+    if (!label || !clientName || !shippingKey) {
+      return res.status(400).json({ ok: false, error: 'Required fields missing' });
+    }
+
+    const profile = new BlueDartProfile({
+      label,
+      clientName,
+      shippingKey,
+      trackingKey: trackingKey || shippingKey,
+      consigner,
+      defaults,
+      isDefault: isDefault || false
+    });
+
+    await profile.save();
+    res.status(201).json({ ok: true, data: profile });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+export const updateProfile = async (req, res) => {
+  try {
+    const { profileId } = req.params;
+    const profile = await BlueDartProfile.findByIdAndUpdate(profileId, req.body, { new: true });
+
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Profile not found' });
+    }
+
+    res.json({ ok: true, data: profile });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+export const deleteProfile = async (req, res) => {
+  try {
+    const { profileId } = req.params;
+
+    if (!profileId) {
+      return res.status(400).json({ ok: false, error: 'Profile ID required' });
+    }
+
+    const profile = await BlueDartProfile.findByIdAndDelete(profileId);
+
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Profile not found' });
+    }
+
+    res.json({ ok: true, message: 'Profile deleted successfully' });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// ✅ 4. GET READY ORDERS (EXISTING)
+export const getOrdersForShipment = async (req, res) => {
+  try {
+    const orders = await Order.find({
+      status: 'confirmed',
+      'shipping.blueDart.awbNumber': { $exists: false }
+    })
+      .populate('shippingAddress')
+      .sort({ createdAt: -1 });
+
+    res.json({ ok: true, data: orders });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// ✅ 5. BULK CREATE (EXISTING)
+export const bulkCreateShipments = async (req, res) => {
+  try {
+    const { orderIds, profileId } = req.body;
+
+    if (!orderIds?.length) {
+      return res.status(400).json({ ok: false, error: 'Order IDs required' });
+    }
+
+    const results = { success: [], failed: [] };
+
+    for (const orderId of orderIds) {
+      try {
+        const order = await Order.findById(orderId).populate('shippingAddress items.product');
+        if (!order) {
+          results.failed.push({ orderId, error: 'Order not found' });
+          continue;
+        }
+
+        const profile = await BlueDartProfile.findById(profileId);
+        if (!profile) {
+          results.failed.push({ orderId, error: 'Profile not found' });
+          continue;
+        }
+
+        const waybillData = {
+          consigner: profile.consigner,
+          consignee: {
+            name: order.shippingAddress.fullName,
+            address: order.shippingAddress.address,
+            address2: order.shippingAddress.area || '',
+            address3: order.shippingAddress.city || '',
+            pincode: order.shippingAddress.pincode,
+            phone: order.shippingAddress.phone || '',
+            mobile: order.shippingAddress.mobile,
+            email: order.shippingAddress.email || ''
+          },
+          productCode: order.paymentStatus === 'pending' ? 'D' : 'A',
+          weight: order.totalWeight || 0.5,
+          declaredValue: order.totalAmount,
+          codAmount: order.paymentStatus === 'pending' ? order.totalAmount : 0
+        };
+
+        const result = await BlueDartAPI.createWaybill(waybillData);
+
+        if (result.success) {
+          await Order.findByIdAndUpdate(orderId, {
+            $set: {
+              'shipping.blueDart': {
+                awbNumber: result.awbNumber,
+                tokenNumber: result.tokenNumber,
+                codAmount: result.codAmount,
+                productCode: waybillData.productCode,
+                status: 'Booked',
+                createdAt: new Date()
+              }
+            }
+          });
+
+          results.success.push({ orderId, awbNumber: result.awbNumber });
+        } else {
+          results.failed.push({ orderId, error: 'Waybill creation failed' });
+        }
+      } catch (error) {
+        results.failed.push({ orderId, error: error.message });
+      }
+    }
+
+    res.json({
+      ok: true,
+      message: `Success: ${results.success.length}, Failed: ${results.failed.length}`,
+      data: results
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// 🆕 6. TRANSIT TIME
+export const getTransitTime = async (req, res) => {
+  try {
+    const { fromPincode, toPincode, productCode, pickupDate } = req.query;
+
+    if (!fromPincode || !toPincode) {
+      return res.status(400).json({
+        ok: false,
+        error: 'From and To pincodes required'
+      });
+    }
+
+    const result = await BlueDartAPI.getTransitTime({
+      fromPincode,
+      toPincode,
+      productCode: productCode || 'A',
+      pickupDate: pickupDate || new Date()
+    });
+
+    res.json({ ok: result.success, data: result });
+  } catch (error) {
+    console.error('Transit time error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// 🆕 7. SCHEDULE PICKUP
+export const schedulePickup = async (req, res) => {
+  try {
+    const { orderIds, pickupDate, pickupTime, profileId, mode, numberOfPieces, weight } = req.body;
+
+    if (!orderIds?.length || !pickupDate) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Order IDs and pickup date required'
+      });
+    }
+
+    const profile = await BlueDartProfile.findById(profileId);
+    if (!profile) {
+      return res.status(404).json({ ok: false, error: 'Profile not found' });
+    }
+
+    const orders = await Order.find({
+      _id: { $in: orderIds },
+      'shipping.blueDart.awbNumber': { $exists: true }
+    });
+
+    if (!orders.length) {
+      return res.status(400).json({
+        ok: false,
+        error: 'No valid shipments found for pickup'
+      });
+    }
+
+    const pickupData = {
+      customerCode: profile.clientName,
+      customerName: profile.consigner.name,
+      address1: profile.consigner.address,
+      address2: profile.consigner.address2 || '',
+      address3: profile.consigner.address3 || '',
+      pincode: profile.consigner.pincode,
+      phone: profile.consigner.phone || '',
+      mobile: profile.consigner.mobile,
+      email: profile.consigner.email,
+      pickupDate,
+      pickupTime: pickupTime || '1400',
+      mode: mode || 'SURFACE',
+      numberOfPieces: numberOfPieces || orders.length,
+      weight: weight || orders.length * 0.5,
+      requestedBy: req.user?.email || 'admin'
     };
 
-    res.json({ ok: true, stats: result });
-  } catch (e) {
-    console.error("bdGetStats error:", e);
-    next(e);
+    const result = await BlueDartAPI.schedulePickup(pickupData);
+
+    await Order.updateMany(
+      { _id: { $in: orderIds } },
+      {
+        $set: {
+          'shipping.blueDart.pickupConfirmation': result.confirmationNumber,
+          'shipping.blueDart.pickupToken': result.tokenNumber,
+          'shipping.blueDart.pickupDate': result.pickupDate,
+          'shipping.blueDart.pickupScheduled': true,
+          'shipping.blueDart.pickupScheduledAt': new Date()
+        }
+      }
+    );
+
+    res.json({
+      ok: true,
+      message: 'Pickup scheduled successfully',
+      data: {
+        confirmationNumber: result.confirmationNumber,
+        tokenNumber: result.tokenNumber,
+        pickupDate: result.pickupDate,
+        ordersCount: orders.length
+      }
+    });
+  } catch (error) {
+    console.error('Pickup error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
-// ✅ FIXED: Admin: Download shipping label (now actually works)
-export const bdGenerateLabel = async (req, res, next) => {
+// 🆕 8. CHECK SERVICEABILITY
+export const checkServiceability = async (req, res) => {
   try {
-    const { awb } = req.params;
-    const order = await Order.findOne({ 'shipping.bd.awbNumber': awb });
+    const { pincode } = req.params;
 
-    if (!order) {
-      return res.status(404).json({ ok: false, error: 'Order not found for AWB' });
-    }
-
-    // If label URL exists in order, redirect to it
-    if (order.shipping.bd.labelUrl) {
-      return res.redirect(order.shipping.bd.labelUrl);
-    }
-
-    // ✅ FIXED: Get profile and generate label
-    const profileId = order.shipping?.bd?.profileId;
-    const profile = profileId
-      ? await BlueDartProfile.findById(profileId)
-      : await BlueDartProfile.findOne({ isDefault: true });
-
-    if (!profile && !process.env.BLUEDART_SHIPPING_KEY) {
+    if (!pincode || pincode.length !== 6 || !/^\d{6}$/.test(pincode)) {
       return res.status(400).json({
         ok: false,
-        error: 'No BlueDart profile configured'
+        error: 'Valid 6-digit pincode required'
       });
     }
 
-    const pdf = await generateLabel(
-      awb,
-      profile?.shippingKey || process.env.BLUEDART_SHIPPING_KEY,
-      profile?.clientName || process.env.BLUEDART_CLIENT_NAME
-    );
+    const result = await BlueDartAPI.checkServiceability(pincode);
 
-    res.set('Content-Type', 'application/pdf');
-    res.set('Content-Disposition', `attachment; filename=label-${awb}.pdf`);
-    res.send(pdf);
-  } catch (e) {
-    console.error("bdGenerateLabel error:", e);
-    res.status(500).json({
-      ok: false,
-      error: e.message || 'Label generation failed',
-      details: e.response?.data || null
-    });
+    res.json({ ok: result.success !== false, data: result });
+  } catch (error) {
+    console.error('Serviceability error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
-// ✅ FIXED: Admin: Download invoice (now actually works)
-export const bdGenerateInvoice = async (req, res, next) => {
+// 🆕 9. CANCEL PICKUP
+export const cancelPickup = async (req, res) => {
   try {
-    const { awb } = req.params;
-    const order = await Order.findOne({ 'shipping.bd.awbNumber': awb });
+    const { confirmationNumber, reason, orderIds } = req.body;
 
-    if (!order) {
-      return res.status(404).json({ ok: false, error: 'Order not found for AWB' });
-    }
-
-    // If invoice URL exists, redirect
-    if (order.shipping.bd.invoiceUrl) {
-      return res.redirect(order.shipping.bd.invoiceUrl);
-    }
-
-    // ✅ FIXED: Get profile and generate invoice
-    const profileId = order.shipping?.bd?.profileId;
-    const profile = profileId
-      ? await BlueDartProfile.findById(profileId)
-      : await BlueDartProfile.findOne({ isDefault: true });
-
-    if (!profile && !process.env.BLUEDART_SHIPPING_KEY) {
+    if (!confirmationNumber) {
       return res.status(400).json({
         ok: false,
-        error: 'No BlueDart profile configured'
+        error: 'Confirmation number required'
       });
     }
 
-    const pdf = await generateInvoice(
-      awb,
-      profile?.shippingKey || process.env.BLUEDART_SHIPPING_KEY,
-      profile?.clientName || process.env.BLUEDART_CLIENT_NAME
-    );
+    const result = await BlueDartAPI.cancelPickup(confirmationNumber, reason);
 
-    res.set('Content-Type', 'application/pdf');
-    res.set('Content-Disposition', `attachment; filename=invoice-${awb}.pdf`);
-    res.send(pdf);
-  } catch (e) {
-    console.error("bdGenerateInvoice error:", e);
-    res.status(500).json({
-      ok: false,
-      error: e.message || 'Invoice generation failed',
-      details: e.response?.data || null
-    });
+    if (result.success && orderIds?.length) {
+      await Order.updateMany(
+        { _id: { $in: orderIds } },
+        {
+          $set: {
+            'shipping.blueDart.pickupScheduled': false,
+            'shipping.blueDart.pickupCancelled': true,
+            'shipping.blueDart.pickupCancelledAt': new Date(),
+            'shipping.blueDart.pickupCancelReason': reason || 'User cancelled'
+          }
+        }
+      );
+    }
+
+    res.json({ ok: result.success, message: result.message, data: result });
+  } catch (error) {
+    console.error('Cancel pickup error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
+};
+
+// 🆕 10. CANCEL WAYBILL
+export const cancelWaybill = async (req, res) => {
+  try {
+    const { orderId, awbNumber, reason } = req.body;
+
+    if (!awbNumber) {
+      return res.status(400).json({
+        ok: false,
+        error: 'AWB number required'
+      });
+    }
+
+    const result = await BlueDartAPI.cancelWaybill(awbNumber, reason);
+
+    if (result.success && orderId) {
+      await Order.findByIdAndUpdate(orderId, {
+        $set: {
+          'shipping.blueDart.status': 'Cancelled',
+          'shipping.blueDart.cancelledAt': new Date(),
+          'shipping.blueDart.cancelReason': reason || 'User cancelled'
+        }
+      });
+    }
+
+    res.json({ ok: result.success, message: result.message, data: result });
+  } catch (error) {
+    console.error('Cancel waybill error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+export default {
+  createShipment,
+  trackShipment,
+  getProfiles,
+  createProfile,
+  updateProfile,
+  deleteProfile,
+  getOrdersForShipment,
+  bulkCreateShipments,
+  getTransitTime,
+  schedulePickup,
+  checkServiceability,
+  cancelPickup,
+  cancelWaybill
 };

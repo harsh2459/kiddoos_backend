@@ -51,10 +51,10 @@ export const importBooks = async (req, res) => {
       },
       assets: {
         // Ensure the file is stored as a relative path in the database
-        coverUrl: item.coverUrl 
+        coverUrl: item.coverUrl
           ? item.coverUrl.split(',').map(url => {
-              return url.trim().startsWith('/public/uploads/') ? url.trim() : `/public/uploads/${url.trim()}`;
-            })
+            return url.trim().startsWith('/public/uploads/') ? url.trim() : `/public/uploads/${url.trim()}`;
+          })
           : [],
         samplePdfUrl: item.samplePdfUrl || ''
       },
@@ -78,8 +78,6 @@ export const importBooks = async (req, res) => {
     res.status(500).json({ ok: false, error: "Failed to import books" });
   }
 };
-
-
 
 // Export books to Excel
 export const exportBooks = async (req, res) => {
@@ -171,8 +169,8 @@ export const listBooks = async (req, res, next) => {
 
 export const getBook = async (req, res) => {
   const book = await Book.findOne({ slug: req.params.slug, visibility: "public" });
-  if (!book) return res.status(404).json({ ok:false, error:"Not found" });
-  res.json({ ok:true, book });
+  if (!book) return res.status(404).json({ ok: false, error: "Not found" });
+  res.json({ ok: true, book });
 };
 
 export const createBook = async (req, res, next) => {
@@ -244,5 +242,5 @@ export const updateBook = async (req, res, next) => {
 
 export const deleteBook = async (req, res) => {
   await Book.findByIdAndDelete(req.params.id);
-  res.json({ ok:true });
+  res.json({ ok: true });
 };

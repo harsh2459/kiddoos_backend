@@ -5,7 +5,6 @@ import Customer from "../model/Customer.js";
 import Book from "../model/Book.js"; // used for price snapshot
 import { sendAbandonedCartEmail } from "../utils/mailer.js";
 
-
 const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "dev_email_otp_secret";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const JWT_EXPIRES_IN = "7d";
@@ -13,6 +12,7 @@ const JWT_EXPIRES_IN = "7d";
 /* -------------------------
    Helpers
 -------------------------- */
+
 const issueToken = (customer) =>
     jwt.sign({ cid: customer._id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 
@@ -309,6 +309,5 @@ export const runAbandonedCartSweep = async () => {
         c.resetAbandonedProgram("expired");
         await c.save();
     }
-
     return { sent: dueToSend.length, expired: toExpire.length };
 };

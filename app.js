@@ -33,7 +33,7 @@ const allowListExact = new Set([
   "https://kidoos-frontend.vercel.app",
   "http://localhost:3000",
   "http://localhost:5173",
-  "https://kiddosintellect.com"
+  "https://kiddosintellect.com/"
 ]);
 
 const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/;
@@ -69,7 +69,6 @@ import uploadRoutes from "./routes/uploadsroute.js";
 import authRoutes from "./routes/authroute.js";
 import settingsRoutes from "./routes/settingsroute.js";
 import bluedartRoute from './routes/bluedartroute.js';
-import shipmentsRoutes from "./routes/shipmentsroute.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
 import mailSenderRoutes from "./routes/mailSenderRoutes.js";
@@ -78,13 +77,14 @@ import { requireAuth } from "./controller/_middleware/auth.js";
 import { uploadImage } from "./controller/uploadscontroller.js";
 import { onOrderPaid } from './controller/orderscontroller.js';
 import blueDartProfileRoute from './routes/blueDartProfileRoute.js';
-
+import labelRoute from './routes/labelRoute.js';
+app.use('/api/labels', labelRoute);
+app.use('/uploads', express.static('uploads'));
 app.use("/api/bluedart-profiles", blueDartProfileRoute);
 app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);
 app.use("/api/customer", customerRoutes);
-app.use("/api/shipments", shipmentsRoutes);
 app.use("/api/bluedart", bluedartRoute);
 app.use("/api/books", bookRoutes);
 app.use("/api/orders", orderRoutes);
@@ -113,3 +113,4 @@ const ensureDb = (async () => {
 })();
 
 export { app, ensureDb };
+
