@@ -1,7 +1,7 @@
 // backend/controller/labelController.js
 
 import Order from '../model/Order.js';
-import BlueDartLabel from './_services/';
+import BlueDartLabel from './_services/bluedart-label.js';
 
 // Generate Label PDF from Blue Dart API
 export const generateLabel = async (req, res) => {
@@ -139,7 +139,7 @@ export const getLabelInfo = async (req, res) => {
     const result = await BlueDartLabel.getLabel(fileName);
 
     if (!result.success) {
-      return res.status(404).json({
+      return res.status(404).json({ 
         ok: false,
         error: result.error || 'Label not found'
       });

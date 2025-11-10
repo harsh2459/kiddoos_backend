@@ -1,5 +1,4 @@
 // backend/routes/bluedartroute.js
-
 import express from 'express';
 import {
   createShipment,
@@ -14,7 +13,7 @@ import {
   schedulePickup,
   checkServiceability,
   cancelPickup,
-  cancelWaybill
+  cancelWaybill 
 } from '../controller/bluedartController.js';
 import { requireAuth } from '../controller/_middleware/auth.js';
 

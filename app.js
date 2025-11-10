@@ -78,6 +78,7 @@ import { uploadImage } from "./controller/uploadscontroller.js";
 import { onOrderPaid } from './controller/orderscontroller.js';
 import blueDartProfileRoute from './routes/blueDartProfileRoute.js';
 import labelRoute from './routes/labelRoute.js';
+
 app.use('/api/labels', labelRoute);
 app.use('/uploads', express.static('uploads'));
 app.use("/api/bluedart-profiles", blueDartProfileRoute);

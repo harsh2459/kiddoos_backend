@@ -14,6 +14,7 @@ export const createShipment = async (req, res) => {
     }
 
     const order = await Order.findById(orderId).populate('shippingAddress items.product');
+
     if (!order) {
       return res.status(404).json({ ok: false, error: 'Order not found' });
     }
@@ -199,13 +200,11 @@ export const bulkCreateShipments = async (req, res) => {
           results.failed.push({ orderId, error: 'Order not found' });
           continue;
         }
-
         const profile = await BlueDartProfile.findById(profileId);
         if (!profile) {
           results.failed.push({ orderId, error: 'Profile not found' });
           continue;
         }
-
         const waybillData = {
           consigner: profile.consigner,
           consignee: {
@@ -239,7 +238,6 @@ export const bulkCreateShipments = async (req, res) => {
               }
             }
           });
-
           results.success.push({ orderId, awbNumber: result.awbNumber });
         } else {
           results.failed.push({ orderId, error: 'Waybill creation failed' });

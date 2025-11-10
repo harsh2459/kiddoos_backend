@@ -88,6 +88,7 @@ const OrderSchema = new Schema({
       canceledAt: Date,
       
       // ===== LABEL FIELDS (NEW - for label generation) =====
+
       labelUrl: String,
       labelFileName: String,
       labelGeneratedAt: Date,
@@ -96,6 +97,7 @@ const OrderSchema = new Schema({
         enum: ["generated", "downloaded", "failed"],
         default: null
       },
+      
       // ====================================================
       
       manifestUrl: String,
