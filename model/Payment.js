@@ -3,7 +3,7 @@ const Schema = mongoose.Schema;
 
 const PaymentSchema = new Schema({
   orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true },
-  paymentType: { type: String, enum: ['full_online', 'half_online_half_cod'], required: true },
+  paymentType: { type: String, },
   provider: { type: String, default: 'razorpay' },
   providerOrderId: { type: String },
   providerPaymentId: { type: String },

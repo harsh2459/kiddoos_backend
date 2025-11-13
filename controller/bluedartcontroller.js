@@ -355,6 +355,7 @@ export const schedulePickup = async (req, res) => {
         ordersCount: orders.length
       }
     });
+    
   } catch (error) {
     console.error('Pickup error:', error);
     res.status(500).json({ ok: false, error: error.message });

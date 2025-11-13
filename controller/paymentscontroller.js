@@ -16,7 +16,16 @@ async function getRazorpayCfg() {
 
 export const createRazorpayOrder = async (req, res) => {
   try {
+
     const { amountInRupees, orderId, paymentType } = req.body;
+
+    // Debug logs
+    console.log("===================");
+    console.log("📦 Payment Request:");
+    console.log("amountInRupees:", amountInRupees);
+    console.log("paymentType:", paymentType);
+    console.log("===================");
+
     if (!amountInRupees || !orderId || !paymentType) {
       return res.status(400).json({ ok: false, error: "Missing required fields" });
     }
@@ -24,8 +33,17 @@ export const createRazorpayOrder = async (req, res) => {
     const { keyId, keySecret } = await getRazorpayCfg();
     const fullPaise = Math.floor(Number(amountInRupees) * 100);
     let amountToCharge = fullPaise;
-    if (paymentType === "half_online_half_cod") {
+
+console.log("💰 Before check:");    
+    console.log("fullPaise:", fullPaise);
+
+    // Check for half payment
+    if (paymentType === "half_online_half_cod" || paymentType === "half_cod_half_online") {
       amountToCharge = Math.floor(fullPaise / 2);
+      console.log("✅ DIVIDED BY 2!");
+      console.log("   New amount:", amountToCharge, "paise (₹" + (amountToCharge / 100) + ")");
+    } else {
+      console.log("❌ NOT DIVIDED - using full amount");
     }
 
     const shortId = String(orderId).slice(-8);
@@ -39,6 +57,15 @@ export const createRazorpayOrder = async (req, res) => {
       receipt
     });
 
+    console.log("🎯 Razorpay Order Created:");
+    console.log("   amount:", rpOrder.amount, "paise (₹" + (rpOrder.amount / 100) + ")");
+    console.log("===================");
+
+    // ✅ FIXED: Calculate pendingAmount correctly (in paise, not rupees)
+    const pendingAmountPaise = (paymentType === "half_online_half_cod" || paymentType === "half_cod_half_online")
+      ? (fullPaise - amountToCharge)
+      : 0;
+
     const payment = await Payment.create({
       orderId,
       paymentType,
@@ -46,12 +73,18 @@ export const createRazorpayOrder = async (req, res) => {
       providerOrderId: rpOrder.id,
       status: "created",
       paidAmount: 0,
-      pendingAmount: paymentType === "half_online_half_cod" ? fullPaise - amountToCharge : 0,
+      pendingAmount: pendingAmountPaise / 100, // Convert to rupees for storage
       currency: rpOrder.currency,
       rawResponse: rpOrder
     });
 
-    return res.json({ ok: true, order: rpOrder, key: keyId, paymentId: payment._id });
+    return res.json({
+      ok: true,
+      order: rpOrder,
+      key: keyId,
+      paymentId: payment._id
+    });
+
   } catch (e) {
     console.error("createRazorpayOrder error:", e);
     return res.status(500).json({ ok: false, error: e.message });
@@ -61,8 +94,10 @@ export const createRazorpayOrder = async (req, res) => {
 export const verifyPayment = async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentId } = req.body;
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !paymentId)
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !paymentId) {
       return res.status(400).json({ ok: false, error: "Missing verification data" });
+    }
 
     const payment = await Payment.findById(paymentId);
     if (!payment) return res.status(404).json({ ok: false, error: "Payment not found" });
@@ -73,14 +108,15 @@ export const verifyPayment = async (req, res) => {
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    if (generated_signature !== razorpay_signature)
+    if (generated_signature !== razorpay_signature) {
       return res.status(400).json({ ok: false, error: "Invalid signature" });
+    }
 
     // Update payment
     payment.providerPaymentId = razorpay_payment_id;
     const totalAmount = payment.paidAmount + payment.pendingAmount;
-    
-    if (payment.paymentType === 'half_online_half_cod') {
+
+    if (payment.paymentType === 'half_online_half_cod' || payment.paymentType === 'half_cod_half_online') {
       payment.paidAmount = Math.floor(totalAmount / 2);
       payment.pendingAmount = totalAmount - payment.paidAmount;
       payment.status = 'partially_paid';
@@ -94,10 +130,10 @@ export const verifyPayment = async (req, res) => {
     payment.verifiedAt = new Date();
     await payment.save();
 
-    // Update order status - NO AUTO SHIPMENT CREATION
+    // Update order status
     const order = await Order.findByIdAndUpdate(
-      payment.orderId, 
-      { 
+      payment.orderId,
+      {
         status: payment.status === 'paid' ? 'confirmed' : 'partially_paid',
         'payment.status': payment.status
       },
@@ -106,6 +142,7 @@ export const verifyPayment = async (req, res) => {
 
     res.json({ ok: true, verified: true, payment, order });
   } catch (e) {
+    console.error("verifyPayment error:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 };
@@ -141,7 +178,6 @@ export const razorpayWebhook = async (req, res) => {
         );
       }
     }
-
     res.json({ ok: true });
   } catch (error) {
     console.error("Webhook processing error:", error);

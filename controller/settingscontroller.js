@@ -1,6 +1,6 @@
 import Setting from "../model/Setting.js";
 import { getBaseFromReq, toAbsolute, sanitizePathsToRelative } from "../utils/url.js";
-import { PUBLIC_BASES } from "../app.js"; // or re-derive here if you prefer
+import { PUBLIC_BASES } from "../app.js";
 
 async function getKey(key, fallback = {}) {
   const doc = await Setting.findOne({ key });
@@ -14,8 +14,8 @@ export const getPublicSettings = async (req, res) => {
   const homepage = await getKey("homepage", { blocks: [] });
   const payments = await getKey("payments", { providers: [] });
   const visibility = await getKey("visibility", {
-    publicNav: ["catalog","theme","admin","cart"],
-    pages: { catalog:{public:true}, theme:{public:true}, adminLogin:{public:true} }
+    publicNav: ["catalog", "theme", "admin", "cart"],
+    pages: { catalog: { public: true }, theme: { public: true }, adminLogin: { public: true } }
   });
 
   const base = getBaseFromReq(req);
@@ -25,11 +25,26 @@ export const getPublicSettings = async (req, res) => {
     faviconUrl: site.faviconUrl ? toAbsolute(site.faviconUrl, base) : "",
   };
 
+  // FIX: Return enabled status without exposing secrets
+  // But we still need to return the full payment structure
   const safePayments = {
-    providers: (payments.providers || []).map(p => ({ id: p.id, name: p.name, enabled: !!p.enabled }))
+    providers: (payments.providers || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      enabled: !!p.enabled
+      // NOTE: We're NOT sending config (keyId/keySecret) to public endpoint for security
+      // The checkout will use the backend to create orders
+    }))
   };
 
-  res.json({ ok: true, site: siteOut, theme, homepage, payments: safePayments, visibility });
+  res.json({ 
+    ok: true, 
+    site: siteOut, 
+    theme, 
+    homepage, 
+    payments: safePayments, 
+    visibility 
+  });
 };
 
 export const getAdminSettings = async (req, res) => {
@@ -37,7 +52,10 @@ export const getAdminSettings = async (req, res) => {
   const theme = await getKey("theme", {});
   const homepage = await getKey("homepage", { blocks: [] });
   const payments = await getKey("payments", { providers: [] });
-  const visibility = await getKey("visibility", { publicNav: ["catalog","theme","admin","cart"], pages: {} });
+  const visibility = await getKey("visibility", { 
+    publicNav: ["catalog", "theme", "admin", "cart"], 
+    pages: {} 
+  });
 
   const base = getBaseFromReq(req);
   const siteOut = {
@@ -52,7 +70,6 @@ export const getAdminSettings = async (req, res) => {
 // ALWAYS store relative
 export const updateSiteSettings = async (req, res) => {
   const input = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
-
   const doc = await Setting.findOneAndUpdate(
     { key: "site" },
     { value: input },
@@ -70,19 +87,29 @@ export const updateSiteSettings = async (req, res) => {
 };
 
 export const updateThemeSettings = async (req, res) => {
-  const doc = await Setting.findOneAndUpdate({ key: "theme" }, { value: req.body }, { upsert: true, new: true });
+  const doc = await Setting.findOneAndUpdate(
+    { key: "theme" }, 
+    { value: req.body }, 
+    { upsert: true, new: true }
+  );
   res.json({ ok: true, theme: doc.value });
 };
 
 export const updateHomepage = async (req, res) => {
   const { blocks } = req.body;
-  const doc = await Setting.findOneAndUpdate({ key: "homepage" }, { value: { blocks } }, { upsert: true, new: true });
+  const doc = await Setting.findOneAndUpdate(
+    { key: "homepage" }, 
+    { value: { blocks } }, 
+    { upsert: true, new: true }
+  );
   res.json({ ok: true, homepage: doc.value });
 };
 
 export const upsertPayments = async (req, res) => {
-  const doc = await Setting.findOneAndUpdate({ key: "payments" }, { value: req.body }, { upsert: true, new: true });
+  const doc = await Setting.findOneAndUpdate(
+    { key: "payments" }, 
+    { value: req.body }, 
+    { upsert: true, new: true }
+  );
   res.json({ ok: true, payments: doc.value });
 };
-
-

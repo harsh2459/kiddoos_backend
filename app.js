@@ -72,9 +72,7 @@ import bluedartRoute from './routes/bluedartroute.js';
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
 import mailSenderRoutes from "./routes/mailSenderRoutes.js";
-import { exportBooks, importBooks } from "./controller/BooksController.js";
-import { requireAuth } from "./controller/_middleware/auth.js";
-import { uploadImage } from "./controller/uploadscontroller.js";
+import { exportBooks, } from "./controller/BooksController.js";
 import { onOrderPaid } from './controller/orderscontroller.js';
 import blueDartProfileRoute from './routes/blueDartProfileRoute.js';
 import labelRoute from './routes/labelRoute.js';
@@ -94,7 +92,6 @@ app.use("/api/uploads", uploadRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/settings", settingsRoutes);
 app.post('/api/orders/place', onOrderPaid);
-app.post("/api/import", uploadImage, importBooks);
 app.get("/api/export", exportBooks);
 
 // 404

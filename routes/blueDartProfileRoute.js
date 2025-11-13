@@ -9,7 +9,7 @@ router.use(requireAuth('admin'));
 
 router.get('/', listProfiles);
 router.get('/:id', getProfile);
-router.post('/', saveProfile);
+router.post('/', saveProfile);  
 router.delete('/:id', deleteProfile);
 
 export default router;

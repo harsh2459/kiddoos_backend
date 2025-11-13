@@ -144,7 +144,7 @@ export const getLabelInfo = async (req, res) => {
         error: result.error || 'Label not found'
       });
     }
-
+    
     res.json({
       ok: true,
       data: {

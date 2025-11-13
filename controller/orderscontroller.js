@@ -33,7 +33,7 @@ export async function onOrderPaid(order) {
 export async function createOrder(req, res, next) {
   try {
     let { customerId, customer, items, shipping, payment, totals, amount, currency } = req.body;
-    
+
     // ✅ Handle both customerId (existing) and customer object (guest)
     if (!customerId && customer) {
       // Create or find customer first
@@ -43,7 +43,7 @@ export async function createOrder(req, res, next) {
           ...(customer.email ? [{ email: customer.email }] : [])
         ].filter(Boolean)
       });
-      
+
       if (!existingCustomer) {
         // ✅ Create guest customer with simple password hash
         const tempPassword = crypto.randomBytes(8).toString('hex');
@@ -57,14 +57,14 @@ export async function createOrder(req, res, next) {
           isGuest: true,
           emailVerified: false
         });
-        
+
         await existingCustomer.save();
         console.log('✅ Created guest customer:', existingCustomer._id);
       }
-      
+
       customerId = existingCustomer._id;
     }
-    
+
     if (!customerId || !items?.length) {
       return res.status(400).json({
         ok: false,
@@ -91,7 +91,7 @@ export async function createOrder(req, res, next) {
       amount: amount || totals?.grandTotal || 0,
       taxAmount: totals?.taxAmount || 0,
       shippingAmount: totals?.shippingAmount || 0,
-      
+
       // ✅ FIXED: Payment object with correct enum values
       payment: {
         provider: payment?.provider || "razorpay",
@@ -105,10 +105,10 @@ export async function createOrder(req, res, next) {
         dueOnDeliveryAmount: 0,
         codSettlementStatus: "na"
       },
-      
+
       email: customer?.email || "",
       phone: customer?.phone || "",
-      
+
       // ✅ FIXED: Shipping structure
       shipping: {
         name: customer?.name || "",
@@ -119,7 +119,7 @@ export async function createOrder(req, res, next) {
         state: shipping?.state || "",
         pincode: shipping?.postalCode || "",
         country: shipping?.country || "India",
-        
+
         // Initialize shipping provider data
         provider: null,
         bd: {
@@ -127,24 +127,24 @@ export async function createOrder(req, res, next) {
           logs: []
         }
       },
-      
+
       status: "pending", // ✅ Valid enum: ["pending", "paid", "shipped", "delivered", "refunded"]
       transactions: []
     };
 
     const order = new Order(orderData);
-    
+
     // ✅ Apply payment mode logic from schema methods
     if (payment?.method === "half_online_half_cod") {
       order.applyPaymentMode("half");
     } else {
       order.applyPaymentMode("full");
     }
-    
+
     await order.save();
-    
+
     console.log('✅ Order created:', order._id);
-    
+
     // ✅ Return in the format your frontend expects
     res.json({
       ok: true,
@@ -152,66 +152,93 @@ export async function createOrder(req, res, next) {
       orderId: order._id,
       _id: order._id  // Fallback for compatibility
     });
-    
+
   } catch (e) {
     console.error("❌ Create order error:", e);
     next(e);
   }
 }
 
-export async function listOrders(req, res, next) {
+export const listOrders = async (req, res, next) => {
   try {
-    const { q = "", status = "", page = 1, limit = 20 } = req.query;
-    
-    // Build filter object
-    let filter = {};
-    
+    const {
+      q = "",
+      status = "",
+      page = 1,
+      limit = 20,
+      startDate, // ✅ NEW
+      endDate    // ✅ NEW
+    } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const where = {};
+
+    // Search filter
     if (q) {
-      const searchRegex = new RegExp(q, 'i');
-      filter.$or = [
-        { '_id': { $regex: searchRegex } },
-        { 'items.title': { $regex: searchRegex } }
+      where.$or = [
+        { orderNumber: { $regex: q, $options: "i" } },
+        { email: { $regex: q, $options: "i" } },
+        { "customer.name": { $regex: q, $options: "i" } },
+        { "customer.email": { $regex: q, $options: "i" } },
+        { "shipping.name": { $regex: q, $options: "i" } },
+        { "shipping.phone": { $regex: q, $options: "i" } }
       ];
     }
-    
+
+    // Status filter
     if (status) {
-      filter.status = status;
+      where.status = status;
     }
 
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    // Get orders with customer details
-    const orders = await Order.find(filter)
-      .populate('userId', 'name email phone') // ✅ Fixed: userId not customerId
+    // ✅ Date range filter
+    if (startDate || endDate) {
+      where.createdAt = {};
+
+      if (startDate) {
+        where.createdAt.$gte = new Date(startDate);
+        console.log("📅 Filtering orders from:", new Date(startDate));
+      }
+
+      if (endDate) {
+        where.createdAt.$lte = new Date(endDate);
+        console.log("📅 Filtering orders until:", new Date(endDate));
+      }
+    }
+
+    console.log("🔍 Order query:", JSON.stringify(where, null, 2));
+
+    // Get total count
+    const total = await Order.countDocuments(where);
+
+    // Get orders
+    const orders = await Order.find(where)
+      .populate("customer", "name email phone")
+      .populate("shippingAddress")
+      .populate("items.product")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    // Get total count for pagination
-    const total = await Order.countDocuments(filter);
-    
+    console.log(`✅ Found ${orders.length} orders (total: ${total})`);
+
     res.json({
       ok: true,
-      orders,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+      items: orders,
+      orders: orders, // For backward compatibility
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit))
     });
-    
-  } catch (e) {
-    console.error("❌ List orders error:", e);
-    next(e);
+  } catch (error) {
+    console.error("❌ List orders error:", error);
+    next(error);
   }
-}
+};
 
 export async function getOrder(req, res, next) {
   try {
     const { id } = req.params;
-    
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         ok: false,
@@ -233,7 +260,7 @@ export async function getOrder(req, res, next) {
       ok: true,
       order
     });
-    
+
   } catch (e) {
     console.error("❌ Get order error:", e);
     next(e);
@@ -244,7 +271,7 @@ export async function updateOrder(req, res, next) {
   try {
     const { id } = req.params;
     const updateData = req.body;
-    
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         ok: false,
@@ -258,11 +285,11 @@ export async function updateOrder(req, res, next) {
     delete updateData.createdAt;
 
     const order = await Order.findByIdAndUpdate(
-      id, 
-      { 
+      id,
+      {
         ...updateData,
         updatedAt: new Date()
-      }, 
+      },
       { new: true }
     ).populate('userId', 'name email phone');
 
@@ -282,7 +309,7 @@ export async function updateOrder(req, res, next) {
       ok: true,
       order
     });
-    
+
   } catch (e) {
     console.error("❌ Update order error:", e);
     next(e);
@@ -292,7 +319,7 @@ export async function updateOrder(req, res, next) {
 export async function deleteOrder(req, res, next) {
   try {
     const { id } = req.params;
-    
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         ok: false,
@@ -314,7 +341,7 @@ export async function deleteOrder(req, res, next) {
       message: "Order deleted successfully",
       deletedOrder: order
     });
-    
+
   } catch (e) {
     console.error("❌ Delete order error:", e);
     next(e);
@@ -326,7 +353,7 @@ export async function getOrdersByCustomer(req, res, next) {
   try {
     const { customerId } = req.params;
     const { page = 1, limit = 10 } = req.query;
-    
+
     if (!mongoose.Types.ObjectId.isValid(customerId)) {
       return res.status(400).json({
         ok: false,
@@ -335,14 +362,14 @@ export async function getOrdersByCustomer(req, res, next) {
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
+
     const orders = await Order.find({ userId: customerId }) // ✅ Fixed: userId
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const total = await Order.countDocuments({ userId: customerId }); // ✅ Fixed: userId
-    
+
     res.json({
       ok: true,
       orders,
@@ -353,7 +380,7 @@ export async function getOrdersByCustomer(req, res, next) {
         pages: Math.ceil(total / parseInt(limit))
       }
     });
-    
+
   } catch (e) {
     console.error("❌ Get orders by customer error:", e);
     next(e);
@@ -364,7 +391,7 @@ export async function updateOrderStatus(req, res, next) {
   try {
     const { id } = req.params;
     const { status, notes } = req.body;
-    
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         ok: false,
@@ -407,7 +434,7 @@ export async function updateOrderStatus(req, res, next) {
       order,
       message: `Order status updated to ${status}`
     });
-    
+
   } catch (e) {
     console.error("❌ Update order status error:", e);
     next(e);
