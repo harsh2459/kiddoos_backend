@@ -31,23 +31,22 @@ export const registerFirstAdmin = async (req, res) => {
 // Existing admin can create more admins
 export const createAdmin = async (req, res) => {
   const { email, password, name } = req.body || {};
-  if (!email || !password) return res.status(400).json({ ok:false, error:"email and password required" });
+  if (!email || !password) return res.status(400).json({ ok: false, error: "email and password required" });
   const exists = await User.findOne({ email });
-  if (exists) return res.status(400).json({ ok:false, error:"User already exists" });
+  if (exists) return res.status(400).json({ ok: false, error: "User already exists" });
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await User.create({ email, passwordHash, name, role: "admin", isActive: true });
-  res.json({ ok:true, userId: user._id });
+  res.json({ ok: true, userId: user._id });
 };
-
 
 export const seedAdmin = async (req, res) => {
   // quick helper to create first admin
   const { email, password, name } = req.body;
   const exists = await User.findOne({ email });
-  if (exists) return res.json({ ok:true, message: "Admin exists" });
+  if (exists) return res.json({ ok: true, message: "Admin exists" });
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await User.create({ email, passwordHash, name, role: "admin" });
-  res.json({ ok:true, userId: user._id });
+  res.json({ ok: true, userId: user._id });
 };
 
 export const login = async (req, res) => {
