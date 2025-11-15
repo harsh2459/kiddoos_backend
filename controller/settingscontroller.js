@@ -7,6 +7,19 @@ async function getKey(key, fallback = {}) {
   return doc?.value ?? fallback;
 }
 
+// Helper: Check if URL is already absolute (Cloudinary, external, etc.)
+function isAbsoluteUrl(url) {
+  if (!url) return false;
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
+// Helper: Convert to absolute only if it's a relative path
+function toAbsoluteIfNeeded(url, base) {
+  if (!url) return "";
+  if (isAbsoluteUrl(url)) return url; // Already absolute, return as-is
+  return toAbsolute(url, base); // Convert relative to absolute
+}
+
 // PUBLIC
 export const getPublicSettings = async (req, res) => {
   const site = await getKey("site", { title: "Catalogue", logoUrl: "", faviconUrl: "" });
@@ -21,19 +34,16 @@ export const getPublicSettings = async (req, res) => {
   const base = getBaseFromReq(req);
   const siteOut = {
     ...site,
-    logoUrl: site.logoUrl ? toAbsolute(site.logoUrl, base) : "",
-    faviconUrl: site.faviconUrl ? toAbsolute(site.faviconUrl, base) : "",
+    logoUrl: toAbsoluteIfNeeded(site.logoUrl, base),
+    faviconUrl: toAbsoluteIfNeeded(site.faviconUrl, base),
   };
 
   // FIX: Return enabled status without exposing secrets
-  // But we still need to return the full payment structure
   const safePayments = {
     providers: (payments.providers || []).map(p => ({
       id: p.id,
       name: p.name,
       enabled: !!p.enabled
-      // NOTE: We're NOT sending config (keyId/keySecret) to public endpoint for security
-      // The checkout will use the backend to create orders
     }))
   };
 
@@ -60,27 +70,39 @@ export const getAdminSettings = async (req, res) => {
   const base = getBaseFromReq(req);
   const siteOut = {
     ...site,
-    logoUrl: site.logoUrl ? toAbsolute(site.logoUrl, base) : "",
-    faviconUrl: site.faviconUrl ? toAbsolute(site.faviconUrl, base) : "",
+    logoUrl: toAbsoluteIfNeeded(site.logoUrl, base),
+    faviconUrl: toAbsoluteIfNeeded(site.faviconUrl, base),
   };
 
   res.json({ ok: true, site: siteOut, theme, homepage, payments, visibility });
 };
 
-// ALWAYS store relative
+// ALWAYS store relative for local paths, but keep absolute URLs as-is
 export const updateSiteSettings = async (req, res) => {
-  const input = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
+  const input = { ...(req.body || {}) };
+  
+  // Only sanitize to relative if it's NOT an absolute URL
+  const sanitized = {
+    ...input,
+    logoUrl: isAbsoluteUrl(input.logoUrl) 
+      ? input.logoUrl 
+      : sanitizePathsToRelative({ logoUrl: input.logoUrl }, PUBLIC_BASES).logoUrl,
+    faviconUrl: isAbsoluteUrl(input.faviconUrl) 
+      ? input.faviconUrl 
+      : sanitizePathsToRelative({ faviconUrl: input.faviconUrl }, PUBLIC_BASES).faviconUrl,
+  };
+
   const doc = await Setting.findOneAndUpdate(
     { key: "site" },
-    { value: input },
+    { value: sanitized },
     { upsert: true, new: true }
   );
 
   const base = getBaseFromReq(req);
   const siteAbs = {
     ...doc.value,
-    logoUrl: doc.value.logoUrl ? toAbsolute(doc.value.logoUrl, base) : "",
-    faviconUrl: doc.value.faviconUrl ? toAbsolute(doc.value.faviconUrl, base) : "",
+    logoUrl: toAbsoluteIfNeeded(doc.value.logoUrl, base),
+    faviconUrl: toAbsoluteIfNeeded(doc.value.faviconUrl, base),
   };
 
   res.json({ ok: true, site: siteAbs });

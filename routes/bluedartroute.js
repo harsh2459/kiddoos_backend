@@ -14,7 +14,7 @@ import {
   checkServiceability,
   cancelPickup,
   cancelWaybill 
-} from '../controller/bluedartController.js';
+} from '../controller/bluedartcontroller.js';
 import { requireAuth } from '../controller/_middleware/auth.js';
 
 const router = express.Router();

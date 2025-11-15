@@ -30,10 +30,11 @@ app.use(express.urlencoded({ extended: true }));
 
 /** ---------- CORS that supports Vercel prod + previews + localhost ---------- */
 const allowListExact = new Set([
-  "https://kidoos-frontend.vercel.app",
+  "https://kiddos-frontend.vercel.app",
   "http://localhost:3000",
+  "https://www.kiddosintellect.com",
   "http://localhost:5173",
-  "https://kiddosintellect.com/"
+  "https://kiddosintellect.com"
 ]);
 
 const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/;
@@ -68,7 +69,7 @@ import paymentRoutes from "./routes/paymentsroute.js";
 import uploadRoutes from "./routes/uploadsroute.js";
 import authRoutes from "./routes/authroute.js";
 import settingsRoutes from "./routes/settingsroute.js";
-import bluedartRoute from './routes/bluedartroute.js';
+import bluedartroute from './routes/bluedartroute.js';
 import customerRoutes from "./routes/customerRoutes.js";
 import emailTemplateRoutes from "./routes/emailTemplateRoutes.js";
 import mailSenderRoutes from "./routes/mailSenderRoutes.js";
@@ -84,7 +85,7 @@ app.use("/api/admin/mail-senders", mailSenderRoutes);
 app.use("/api/admin/email-templates", emailTemplateRoutes);
 app.use("/api/auth/customer", customerRoutes);
 app.use("/api/customer", customerRoutes);
-app.use("/api/bluedart", bluedartRoute);
+app.use("/api/bluedart", bluedartroute);
 app.use("/api/books", bookRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);

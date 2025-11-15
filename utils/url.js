@@ -14,7 +14,6 @@ export function toAbsolute(relOrAbs, base) {
 
 export function toRelative(url, bases = []) {
   if (!url || typeof url !== "string") return url;
-  if (url.startsWith("/public/")) return url;
 
   // strip any known bases
   for (const b of bases) {
