@@ -166,10 +166,10 @@ export const listOrders = async (req, res, next) => {
       status = "",
       page = 1,
       limit = 20,
-      startDate, // ✅ NEW
-      endDate    // ✅ NEW
+      startDate,
+      endDate
     } = req.query;
-
+    
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const where = {};
 
@@ -178,8 +178,6 @@ export const listOrders = async (req, res, next) => {
       where.$or = [
         { orderNumber: { $regex: q, $options: "i" } },
         { email: { $regex: q, $options: "i" } },
-        { "customer.name": { $regex: q, $options: "i" } },
-        { "customer.email": { $regex: q, $options: "i" } },
         { "shipping.name": { $regex: q, $options: "i" } },
         { "shipping.phone": { $regex: q, $options: "i" } }
       ];
@@ -190,18 +188,14 @@ export const listOrders = async (req, res, next) => {
       where.status = status;
     }
 
-    // ✅ Date range filter
+    // Date range filter
     if (startDate || endDate) {
       where.createdAt = {};
-
       if (startDate) {
         where.createdAt.$gte = new Date(startDate);
-        console.log("📅 Filtering orders from:", new Date(startDate));
       }
-
       if (endDate) {
         where.createdAt.$lte = new Date(endDate);
-        console.log("📅 Filtering orders until:", new Date(endDate));
       }
     }
 
@@ -210,11 +204,10 @@ export const listOrders = async (req, res, next) => {
     // Get total count
     const total = await Order.countDocuments(where);
 
-    // Get orders
+    // Get orders - FIXED populate fields
     const orders = await Order.find(where)
-      .populate("customer", "name email phone")
-      .populate("shippingAddress")
-      .populate("items.product")
+      .populate("userId", "name email phone")      // ✅ Correct: userId
+      .populate("items.bookId", "title coverImage") // ✅ Correct: bookId
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -224,11 +217,12 @@ export const listOrders = async (req, res, next) => {
     res.json({
       ok: true,
       items: orders,
-      orders: orders, // For backward compatibility
+      orders: orders,
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / parseInt(limit))
     });
+
   } catch (error) {
     console.error("❌ List orders error:", error);
     next(error);

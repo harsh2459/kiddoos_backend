@@ -34,7 +34,7 @@ export const createRazorpayOrder = async (req, res) => {
     const fullPaise = Math.floor(Number(amountInRupees) * 100);
     let amountToCharge = fullPaise;
 
-console.log("💰 Before check:");    
+    console.log("💰 Before check:");
     console.log("fullPaise:", fullPaise);
 
     // Check for half payment
@@ -114,7 +114,7 @@ export const verifyPayment = async (req, res) => {
 
     // Update payment
     payment.providerPaymentId = razorpay_payment_id;
-    const totalAmount = payment.paidAmount + payment.pendingAmount;
+    const totalAmount = payment.paidAmount + payment.pendingAmount; 
 
     if (payment.paymentType === 'half_online_half_cod' || payment.paymentType === 'half_cod_half_online') {
       payment.paidAmount = Math.floor(totalAmount / 2);

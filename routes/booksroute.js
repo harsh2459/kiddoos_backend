@@ -5,6 +5,8 @@ import {
   getBookById,
   createBook,
   updateBook,
+  getBookWithSuggestions,
+  getBookByIdWithSuggestions,
   deleteBook,
   importBooks,
   exportBooks,
@@ -88,18 +90,27 @@ router.post(
   importBooks
 );
 
+router.post("/import", requireAuth(["admin", "editor"]), excelUpload.single("file"), importBooks);
 router.get("/export", requireAuth(["admin", "editor"]), exportBooks);
 
+// 2. Admin routes with /admin prefix (very specific)
+router.get("/admin/:idOrSlug/suggestions", requireAuth(["admin", "editor"]), getBookByIdWithSuggestions);
 router.get("/admin/:idOrSlug", requireAuth(["admin", "editor"]), getBookById);
-// Admin CRUD operations
+
+// 3. Root-level admin CRUD (with specific paths)
 router.post("/", requireAuth(["admin", "editor"]), createBook);
 router.patch("/:id", requireAuth(["admin", "editor"]), updateBook);
 router.delete("/:id", requireAuth(["admin", "editor"]), deleteBook);
 
-// ✅ LIST route with OPTIONAL auth - allows both admin and public access
+// 4. ⭐ PUBLIC ROUTES - ORDER IS CRITICAL HERE ⭐
+// List route (matches exact "/")
 router.get("/", optionalAuth, listBooks);
 
-// Public single book route (MUST be LAST)
+// 🔥 SUGGESTIONS ROUTE - MUST BE BEFORE /:slug
+// This MUST come before the generic /:slug route
+router.get("/:slug/suggestions", getBookWithSuggestions);
+
+// Generic slug route (matches any "/:slug")
 router.get("/:slug", getBook);
 
 export default router;

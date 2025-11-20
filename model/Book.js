@@ -25,7 +25,7 @@ const BookSchema = new mongoose.Schema({
   },
 
   assets: {
-    coverUrl: [String],        // /public/uploads/xxx.jpg or CDN
+    coverUrl: [String],
     samplePdfUrl: String
   },
 
@@ -33,8 +33,19 @@ const BookSchema = new mongoose.Schema({
   tags: [{ type: String, index: true }],
 
   descriptionHtml: String,
+  whyChooseThis: [{
+    type: String,
+    trim: true
+  }],
+  suggestions: [{
+    type: String,
+    trim: true,
+    index: true  // Index for fast lookup
+  }],
+  
   visibility: { type: String, enum: ["public", "draft"], default: "public" }
 }, { timestamps: true });
 
 BookSchema.index({ title: "text", authors: "text", tags: "text" });
+BookSchema.index({ suggestions: 1 });
 export default mongoose.model("Book", BookSchema);

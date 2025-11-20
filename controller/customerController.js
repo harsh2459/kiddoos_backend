@@ -68,7 +68,6 @@ export const register = async (req, res) => {
             email: email?.toLowerCase() || undefined,
             phone,
             passwordHash,
-            // mark verified if they passed the OTP ticket
             emailVerifiedAt: email ? new Date() : null,
         });
 
