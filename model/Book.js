@@ -17,13 +17,12 @@ const BookSchema = new mongoose.Schema({
   discountPct: { type: Number, default: 0 },
   taxRate: { type: Number, default: 0 },
   currency: { type: String, default: "INR" },
-
   inventory: {
     sku: { type: String, index: true },
     stock: { type: Number, default: 0 },
     lowStockAlert: { type: Number, default: 5 }
   },
-
+   
   assets: {
     coverUrl: [String],
     samplePdfUrl: String
@@ -42,7 +41,7 @@ const BookSchema = new mongoose.Schema({
     trim: true,
     index: true  // Index for fast lookup
   }],
-  
+
   visibility: { type: String, enum: ["public", "draft"], default: "public" }
 }, { timestamps: true });
 
