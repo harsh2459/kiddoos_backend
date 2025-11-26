@@ -22,7 +22,7 @@ const BookSchema = new mongoose.Schema({
     stock: { type: Number, default: 0 },
     lowStockAlert: { type: Number, default: 5 }
   },
-   
+
   assets: {
     coverUrl: [String],
     samplePdfUrl: String
@@ -45,6 +45,12 @@ const BookSchema = new mongoose.Schema({
   visibility: { type: String, enum: ["public", "draft"], default: "public" }
 }, { timestamps: true });
 
-BookSchema.index({ title: "text", authors: "text", tags: "text" });
-BookSchema.index({ suggestions: 1 });
+BookSchema.index({ title: "text", authors: "text", tags: "text", suggestions: 1 },
+  {
+    default_language: "english",
+    // Use a field name that you don't use anywhere to disable override:
+    language_override: "__language_override_disabled"
+  }
+);
+
 export default mongoose.model("Book", BookSchema);

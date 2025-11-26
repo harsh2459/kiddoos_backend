@@ -2,12 +2,39 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import Customer from "../model/Customer.js";
+import Order from "../model/Order.js";
 import Book from "../model/Book.js"; // used for price snapshot
 import { sendAbandonedCartEmail } from "../utils/mailer.js";
+import { OAuth2Client } from 'google-auth-library';
+import admin from "firebase-admin";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+let serviceAccount;
+
+try {
+  // Assumes serviceAccountKey.json is in the backend root folder (one level up from controllers)
+  serviceAccount = require("../serviceAccountKey.json");
+} catch (e) {
+  console.error("❌ serviceAccountKey.json not found. Google Login will fail.");
+}
+
+// 2. Initialize Firebase Admin (Synchronous)
+if (!admin.apps.length && serviceAccount) {
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log("✅ Firebase Admin initialized successfully");
+  } catch (e) {
+    console.error("❌ Firebase Init Error:", e.message);
+  }
+}
 
 const TICKET_SECRET = process.env.EMAIL_OTP_JWT_SECRET || "789654123698521478963258741454984651348421646s";
 const JWT_SECRET = process.env.JWT_SECRET || "qwertyuioplkjhgfdsazxcvbnm12345678980jfghawfhuqy498554rf3445yt4g5426gt456654y7984gv65864984y16654y98645656465454654465rd14vg68f4165vg14df61g65df4g6514df65g4df65g16df4g6df1g6df4g4";
-const JWT_EXPIRES_IN = "7d";
+const JWT_EXPIRES_IN = "24h";
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || "YOUR_GOOGLE_CLIENT_ID");
 
 // Debug logging (can remove after it works)
 console.log("🔐 [customerController] JWT_SECRET loaded:", JWT_SECRET.substring(0, 20) + "...");
@@ -34,9 +61,71 @@ const publicCustomer = (c) => ({
     updatedAt: c.updatedAt,
 });
 
+
 /* -------------------------
    Auth
 -------------------------- */
+export const googleLogin = async (req, res) => {
+    try {
+        const { idToken } = req.body;
+
+        if (!idToken) {
+            return res.status(400).json({ error: "Google token required" });
+        }
+
+        // 1. Verify Firebase ID Token
+        let decodedToken;
+        try {
+            decodedToken = await admin.auth().verifyIdToken(idToken);
+        } catch (verifyError) {
+            console.error("❌ Firebase token verification failed:", verifyError);
+            return res.status(401).json({ error: "Invalid Google token" });
+        }
+
+        const { email, name, picture, uid: googleUid } = decodedToken;
+
+        if (!email) {
+            return res.status(400).json({ error: "No email from Google" });
+        }
+
+        console.log("✅ Google user verified:", email);
+
+        // 2. Find existing customer by email
+        let customer = await Customer.findOne({ email: email.toLowerCase() });
+
+        if (customer) {
+            // Existing customer - just log them in
+            console.log("🔄 Existing customer logging in via Google:", customer._id);
+        } else {
+            // 3. Create new customer (no password required for Google users)
+            console.log("🆕 Creating new customer from Google:", email);
+
+            customer = await Customer.create({
+                name: name || email.split("@")[0], // Use name or email prefix
+                email: email.toLowerCase(),
+                passwordHash: await bcrypt.hash(googleUid, 10), // Use Google UID as "password"
+                emailVerifiedAt: new Date(), // Already verified by Google
+                preferences: {
+                    marketingEmails: true,
+                    cartReminders: true
+                }
+            });
+        }
+
+        // 4. Issue YOUR JWT token (same as regular login)
+        const token = issueToken(customer);
+
+        res.json({
+            token,
+            customer: publicCustomer(customer)
+        });
+
+    } catch (err) {
+        console.error("❌ Google login error:", err);
+        res.status(500).json({ error: "Google login failed" });
+    }
+};
+
 export const register = async (req, res) => {
     try {
         const { name, email, phone, password, emailOtpTicket } = req.body;
@@ -135,9 +224,9 @@ export const getCart = async (req, res) => {
     try {
         const c = await Customer.findById(req.customerId)
             .populate("cart.items.bookId"); // Get ALL fields
-        
+
         if (!c) return res.status(404).json({ error: "Not found" });
-        
+
         res.json({ cart: c.cart, abandoned: c.abandoned });
     } catch (err) {
         console.error("getCart error:", err);
@@ -166,11 +255,11 @@ export const addToCart = async (req, res) => {
             c.cart.items[idx].unitPriceSnapshot = unitPriceSnapshot;
             c.cart.items[idx].updatedAt = new Date();
         } else {
-            c.cart.items.push({ 
-                bookId, 
-                qty, 
-                unitPriceSnapshot, 
-                addedAt: new Date() 
+            c.cart.items.push({
+                bookId,
+                qty,
+                unitPriceSnapshot,
+                addedAt: new Date()
             });
         }
 
@@ -179,10 +268,10 @@ export const addToCart = async (req, res) => {
         c.startAbandonedProgramIfNeeded();
 
         await c.save();
-        
+
         // ✅ CRITICAL: Populate before response
         await c.populate("cart.items.bookId");
-        
+
         res.json({ cart: c.cart });
     } catch (err) {
         console.error("addToCart:", err);
@@ -220,10 +309,10 @@ export const setCartItemQty = async (req, res) => {
         }
 
         await c.save();
-        
+
         // ✅ CRITICAL: Populate before response
         await c.populate("cart.items.bookId");
-        
+
         res.json({ cart: c.cart });
     } catch (err) {
         console.error("setCartItemQty:", err);
@@ -251,10 +340,10 @@ export const removeCartItem = async (req, res) => {
         }
 
         await c.save();
-        
+
         // ✅ CRITICAL: Populate before response
         await c.populate("cart.items.bookId");
-        
+
         res.json({ cart: c.cart });
     } catch (err) {
         console.error("removeCartItem:", err);
@@ -350,4 +439,49 @@ export const runAbandonedCartSweep = async () => {
         await c.save();
     }
     return { sent: dueToSend.length, expired: toExpire.length };
+};
+
+export const getMyOrders = async (req, res) => {
+    try {
+        const { page = 1, limit = 10, status } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        // ✅ Use userId (not customerId) to match Order schema
+        const query = { userId: req.customerId };
+        if (status) query.status = status;
+
+        console.log('📦 Fetching orders with query:', query);
+
+        // ✅ Populate bookId with all needed fields
+        const orders = await Order.find(query)
+            .populate({
+                path: 'items.bookId',
+                select: 'title coverImage price author isbn genre description'
+            })
+            .populate({
+                path: 'userId',
+                select: 'name email phone'
+            })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        const total = await Order.countDocuments(query);
+
+        console.log(`✅ Found ${orders.length} orders for customer ${req.customerId}`);
+
+        res.json({
+            ok: true,
+            orders,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                totalPages: Math.ceil(total / parseInt(limit))
+            }
+        });
+    } catch (err) {
+        console.error('❌ getMyOrders error:', err);
+        res.status(500).json({ error: 'Failed to fetch orders' });
+    }
 };

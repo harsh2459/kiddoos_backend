@@ -12,11 +12,11 @@ const toSlug = (s) => slugify(s || "book", { lower: true, strict: true, trim: tr
 export const importBooks = async (req, res) => {
   try {
     const file = req.file;
-  
+
     if (!file) {
       return res.status(400).json({ ok: false, error: "No file uploaded" });
     }
-   
+
     // Read Excel/CSV from memory buffer
     const workbook = XLSX.read(file.buffer, { type: "buffer" });
 
@@ -63,7 +63,7 @@ export const importBooks = async (req, res) => {
       sheetName = workbook.SheetNames[0];
     }
 
-   
+
     const sheet = workbook.Sheets[sheetName];
 
     // ✅ Parse with header option to handle Bazaar's multi-row headers
@@ -75,7 +75,7 @@ export const importBooks = async (req, res) => {
       blankrows: false
     });
 
-   
+
     // Find the actual header row
     let headerRowIndex = -1;
     let actualHeaders = [];
@@ -550,7 +550,6 @@ export const getBook = async (req, res) => {
 export const createBook = async (req, res, next) => {
   try {
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
-
     // Handle coverUrl array
     if (typeof body.assets?.coverUrl === "string") {
       body.assets.coverUrl = [body.assets.coverUrl];
@@ -585,6 +584,14 @@ export const createBook = async (req, res, next) => {
       body.suggestions = [...new Set(body.suggestions)];
     }
 
+    if (body.language && typeof body.language === "string") {
+      const trimmed = body.language.trim();
+      if (trimmed.length > 0) {
+        // Capitalize first letter for consistency (optional)
+        body.language = trimmed[0].toUpperCase() + trimmed.slice(1);
+      }
+    }
+
     const slug = await uniqueSlugFrom(body.title || body.slug);
     const doc = await Book.create({ ...body, slug });
 
@@ -600,11 +607,21 @@ export const createBook = async (req, res, next) => {
 };
 
 
-// In updateBook function - add handling for whyChooseThis
 export const updateBook = async (req, res, next) => {
   try {
     const { id } = req.params;
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
+
+    // --- FIX START: Allow language updates ---
+    // Previously, this code deleted body.language. We REMOVED that line.
+    // Your Book.js schema already disables language_override, so this is safe.
+    if (body.language && typeof body.language === "string") {
+         const trimmed = body.language.trim();
+         if (trimmed.length > 0) {
+             body.language = trimmed[0].toUpperCase() + trimmed.slice(1);
+         }
+    }
+    // --- FIX END ---
 
     // Handle coverUrl
     if (body.assets && Object.prototype.hasOwnProperty.call(body.assets, "coverUrl")) {
@@ -617,33 +634,32 @@ export const updateBook = async (req, res, next) => {
       delete body.assets;
     }
 
-    // Handle whyChooseThis array
+    // Handle whyChooseThis
     if (body.whyChooseThis !== undefined) {
       if (typeof body.whyChooseThis === "string") {
         body.whyChooseThis = body.whyChooseThis
           .split(/[\n,]/)
-          .map(s => s.trim())
+          .map((s) => s.trim())
           .filter(Boolean);
       } else if (!Array.isArray(body.whyChooseThis)) {
         body.whyChooseThis = [];
       }
     }
 
-    // ✅ CORRECT: Handle suggestions as string array (group names)
+    // Handle suggestions
     if (body.suggestions !== undefined) {
       if (typeof body.suggestions === "string") {
         body.suggestions = body.suggestions
           .split(/[,\n]/)
-          .map(s => s.trim())
+          .map((s) => s.trim())
           .filter(Boolean);
       } else if (!Array.isArray(body.suggestions)) {
         body.suggestions = [];
       }
-      // Remove duplicates
       body.suggestions = [...new Set(body.suggestions)];
     }
 
-    // Handle slug
+    // Handle slug uniqueness
     if (typeof body.slug === "string" && body.slug.trim()) {
       const desired = toSlug(body.slug);
       const exists = await Book.findOne({ slug: desired, _id: { $ne: id } }).select("_id");
@@ -653,11 +669,7 @@ export const updateBook = async (req, res, next) => {
       delete body.slug;
     }
 
-    const doc = await Book.findByIdAndUpdate(id, body, { 
-      new: true, 
-      runValidators: true 
-    });
-
+    const doc = await Book.findByIdAndUpdate(id, body, { new: true, runValidators: true });
     res.json({ ok: true, book: doc });
   } catch (e) {
     if (e?.code === 11000) return res.status(409).json({ ok: false, error: "Slug already taken." });
@@ -707,20 +719,20 @@ export const getBookWithSuggestions = async (req, res) => {
   try {
     const { slug } = req.params;
     const limit = parseInt(req.query.limit) || 8; // Default to 8 suggestions
-    
+
     console.log("🔍 Fetching book with suggestions:", slug);
 
     // Fetch the main book
-    const book = await Book.findOne({ 
-      slug, 
-      visibility: "public" 
+    const book = await Book.findOne({
+      slug,
+      visibility: "public"
     }).lean();
 
     if (!book) {
       console.log("❌ Book not found:", slug);
-      return res.status(404).json({ 
-        ok: false, 
-        error: "Book not found" 
+      return res.status(404).json({
+        ok: false,
+        error: "Book not found"
       });
     }
 
@@ -736,10 +748,10 @@ export const getBookWithSuggestions = async (req, res) => {
         suggestions: { $in: book.suggestions }, // Has at least one common suggestion group
         visibility: "public"
       })
-      .select('title slug authors price mrp discountPct assets.coverUrl categories tags suggestions')
-      .limit(limit)
-      .sort({ createdAt: -1 }) // Show newest books first
-      .lean();
+        .select('title slug authors price mrp discountPct assets.coverUrl categories tags suggestions')
+        .limit(limit)
+        .sort({ createdAt: -1 }) // Show newest books first
+        .lean();
 
       console.log(`✅ Found ${relatedBooks.length} related books in suggestion groups:`, book.suggestions);
     } else {
@@ -756,8 +768,8 @@ export const getBookWithSuggestions = async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error fetching book with suggestions:", error);
-    res.status(500).json({ 
-      ok: false, 
+    res.status(500).json({
+      ok: false,
       error: "Failed to fetch book details",
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -793,14 +805,14 @@ export const getBookByIdWithSuggestions = async (req, res) => {
         _id: { $ne: book._id },
         suggestions: { $in: book.suggestions }
       })
-      .select('title slug authors price assets.coverUrl visibility suggestions')
-      .lean();
+        .select('title slug authors price assets.coverUrl visibility suggestions')
+        .lean();
     }
 
     console.log(`✅ Admin: Book found with ${relatedBooks.length} books in same suggestion groups`);
 
-    res.json({ 
-      ok: true, 
+    res.json({
+      ok: true,
       book,
       relatedBooks,
       suggestionsCount: relatedBooks.length

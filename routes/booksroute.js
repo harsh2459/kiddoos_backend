@@ -12,6 +12,7 @@ import {
   exportBooks,
 } from "../controller/BooksController.js";
 import { requireAuth } from "../controller/_middleware/auth.js";
+import { listCategories, createCategory } from "../controller/CategoryController.js";
 import multer from "multer";
 
 const router = Router();
@@ -101,6 +102,8 @@ router.get("/admin/:idOrSlug", requireAuth(["admin", "editor"]), getBookById);
 router.post("/", requireAuth(["admin", "editor"]), createBook);
 router.patch("/:id", requireAuth(["admin", "editor"]), updateBook);
 router.delete("/:id", requireAuth(["admin", "editor"]), deleteBook);
+router.get("/categories", listCategories); // public
+router.post("/categories", requireAuth(["admin", "editor"]), createCategory);
 
 // 4. ⭐ PUBLIC ROUTES - ORDER IS CRITICAL HERE ⭐
 // List route (matches exact "/")
@@ -112,5 +115,4 @@ router.get("/:slug/suggestions", getBookWithSuggestions);
 
 // Generic slug route (matches any "/:slug")
 router.get("/:slug", getBook);
-
 export default router;
