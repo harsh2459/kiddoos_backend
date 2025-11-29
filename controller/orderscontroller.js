@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Order from "../model/Order.js";
 import Customer from "../model/Customer.js";
 import { sendBySlug } from "../utils/mailer.js";
+import Book from "../model/Book.js";
 
 export async function onOrderPaid(order) {
   try {
@@ -34,9 +35,23 @@ export async function createOrder(req, res, next) {
   try {
     let { customerId, customer, items, shipping, payment, totals, amount, currency } = req.body;
 
-    // ✅ Handle both customerId (existing) and customer object (guest)
+    console.log("\n" + "=".repeat(80));
+    console.log("🛒 [CreateOrder] Processing new order...");
+    console.log("=".repeat(80));
+    console.log("📦 [CreateOrder] RAW BODY:", JSON.stringify(req.body, null, 2));
+    console.log("📦 [CreateOrder] Items received:", JSON.stringify(items, null, 2));
+    
+    // ✅ CRITICAL DEBUG: Show each item's bookId
+    items.forEach((item, idx) => {
+      console.log(`\n📚 Item ${idx + 1}:`);
+      console.log(`   - bookId: ${item.bookId}`);
+      console.log(`   - _id: ${item._id}`);
+      console.log(`   - title: ${item.title}`);
+      console.log(`   - Full item:`, item);
+    });
+
+    // 1. Guest Customer Logic
     if (!customerId && customer) {
-      // Create or find customer first
       let existingCustomer = await Customer.findOne({
         $or: [
           { phone: customer.phone },
@@ -45,58 +60,151 @@ export async function createOrder(req, res, next) {
       });
 
       if (!existingCustomer) {
-        // ✅ Create guest customer with simple password hash
         const tempPassword = crypto.randomBytes(8).toString('hex');
         const passwordHash = crypto.createHash('sha256').update(tempPassword).digest('hex');
 
         existingCustomer = new Customer({
           name: customer.name || "",
-          email: customer.email || "",
+          email: (customer.email && customer.email.trim() !== "") ? customer.email : undefined,
           phone: customer.phone || "",
-          passwordHash, // ✅ Required field for schema
+          passwordHash,
           isGuest: true,
           emailVerified: false
         });
 
         await existingCustomer.save();
-        console.log('✅ Created guest customer:', existingCustomer._id);
       }
-
       customerId = existingCustomer._id;
     }
 
     if (!customerId || !items?.length) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing customer information or items"
+      return res.status(400).json({ ok: false, error: "Missing customer or items" });
+    }
+
+    // =========================================================
+    // ✅ CRITICAL FIX: FETCH BOOK DETAILS WITH PROPER ID HANDLING
+    // =========================================================
+
+    // 1. Extract IDs and convert to strings for consistent matching
+    const bookIds = items.map(i => {
+      const id = i.bookId || i._id;
+      // ✅ Convert to string to ensure consistent comparison
+      return String(id);
+    }).filter(id => {
+      // ✅ CRITICAL: Filter out invalid IDs
+      const isValid = id && 
+                     id !== 'undefined' && 
+                     id !== 'null' && 
+                     mongoose.Types.ObjectId.isValid(id);
+      
+      if (!isValid) {
+        console.error(`❌ [CreateOrder] Invalid book ID detected: "${id}"`);
+      }
+      return isValid;
+    });
+    
+    console.log("📚 [CreateOrder] Valid book IDs to lookup:", bookIds);
+
+    if (bookIds.length === 0) {
+      console.error("❌ [CreateOrder] No valid book IDs found in items!");
+      return res.status(400).json({ 
+        ok: false, 
+        error: "No valid book IDs in cart items" 
       });
     }
 
-    // ✅ FIXED: Map payment status correctly
-    let paymentStatus = "pending"; // Default
-    if (payment?.status === "created") {
-      paymentStatus = "pending"; // Map "created" to "pending"
-    } else if (["pending", "paid", "failed"].includes(payment?.status)) {
-      paymentStatus = payment.status; // Valid enum values
-    }
+    // 2. Fetch from DB - convert ObjectIds safely
+    const dbBooks = await Book.find({ 
+      _id: { $in: bookIds.map(id => new mongoose.Types.ObjectId(id)) } 
+    }).lean();
+    
+    console.log(`📚 [CreateOrder] Found ${dbBooks.length} books in database`);
 
-    // ✅ FIXED: Create order with schema-compliant structure
-    const orderData = {
-      userId: customerId, // ✅ Schema uses userId, not customerId
-      items: items.map(item => ({
-        bookId: item.bookId || item._id,
+    // 3. Create a Lookup Map - FORCE IDs TO STRING
+    const bookMap = {};
+    dbBooks.forEach(b => { 
+      const idString = String(b._id);
+      bookMap[idString] = b;
+      console.log(`📖 [CreateOrder] Mapped book ${idString}: "${b.title}"`);
+    });
+
+    // 4. Map the items and FORCE the data from the DB
+    const validItems = items.map((item, index) => {
+      // Get ID as string to match our map
+      const rawId = item.bookId || item._id;
+      const bIdString = String(rawId);
+      
+      console.log(`\n📦 [CreateOrder] Processing item ${index + 1}:`);
+      console.log(`   - Raw ID from frontend: ${rawId}`);
+      console.log(`   - String ID: ${bIdString}`);
+      
+      const dbBook = bookMap[bIdString];
+
+      if (!dbBook) {
+        console.error(`❌ [CreateOrder] CRITICAL: Book ID ${bIdString} not found in DB!`);
+        console.error(`   - Available IDs in map:`, Object.keys(bookMap));
+      } else {
+        console.log(`   ✅ Book found: "${dbBook.title}"`);
+      }
+
+      // --- IMAGE EXTRACTION LOGIC ---
+      let imgUrl = "";
+      if (dbBook?.assets?.coverUrl) {
+        if (Array.isArray(dbBook.assets.coverUrl) && dbBook.assets.coverUrl.length > 0) {
+          // ✅ TAKE THE FIRST IMAGE (Your Cloudinary URLs are in an array)
+          imgUrl = dbBook.assets.coverUrl[0];
+          console.log(`   ✅ Image extracted: ${imgUrl.substring(0, 60)}...`);
+        } else if (typeof dbBook.assets.coverUrl === "string") {
+          imgUrl = dbBook.assets.coverUrl;
+          console.log(`   ✅ Image (string): ${imgUrl.substring(0, 60)}...`);
+        }
+      }
+
+      if (dbBook && !imgUrl) {
+        console.warn(`   ⚠️ Book "${dbBook.title}" found, but HAS NO IMAGE in DB.`);
+        console.warn(`   - assets object:`, JSON.stringify(dbBook.assets, null, 2));
+      }
+
+      // --- TITLE & PRICE LOGIC ---
+      const realTitle = dbBook?.title || item.title || "Unknown Item";
+      const realPrice = Number(item.price) > 0 ? Number(item.price) : (dbBook?.price || 0);
+
+      const processedItem = {
+        bookId: rawId,
         qty: Number(item.qty) || 1,
-        unitPrice: Number(item.price) || 0 // ✅ Required unitPrice field
-      })),
+        unitPrice: realPrice,
+        title: realTitle,
+        image: imgUrl || ""  // ✅ SAVE THE IMAGE URL
+      };
+
+      console.log(`   📋 Final processed item:`, JSON.stringify(processedItem, null, 2));
+      return processedItem;
+    });
+
+    console.log("\n✅ [CreateOrder] All items processed successfully");
+    console.log("📋 [CreateOrder] Final items array:", JSON.stringify(validItems, null, 2));
+
+    // =========================================================
+    // END OF BOOK FETCHING
+    // =========================================================
+
+    // Payment Status Logic
+    let paymentStatus = "pending";
+    if (payment?.status === "created") paymentStatus = "pending";
+    else if (["pending", "paid", "failed"].includes(payment?.status)) paymentStatus = payment.status;
+
+    // Construct Order Data
+    const orderData = {
+      userId: customerId,
+      items: validItems, // ✅ Use the fixed items with images
       amount: amount || totals?.grandTotal || 0,
       taxAmount: totals?.taxAmount || 0,
       shippingAmount: totals?.shippingAmount || 0,
-
-      // ✅ FIXED: Payment object with correct enum values
+      
       payment: {
         provider: payment?.provider || "razorpay",
-        mode: "full", // Default mode
-        status: paymentStatus, // ✅ Valid enum: ["pending", "paid", "failed"]
+        mode: "full",
+        status: paymentStatus,
         orderId: payment?.orderId || "",
         paymentId: payment?.paymentId || "",
         signature: payment?.signature || "",
@@ -105,11 +213,8 @@ export async function createOrder(req, res, next) {
         dueOnDeliveryAmount: 0,
         codSettlementStatus: "na"
       },
-
       email: customer?.email || "",
       phone: customer?.phone || "",
-
-      // ✅ FIXED: Shipping structure
       shipping: {
         name: customer?.name || "",
         phone: customer?.phone || "",
@@ -119,42 +224,36 @@ export async function createOrder(req, res, next) {
         state: shipping?.state || "",
         pincode: shipping?.postalCode || "",
         country: shipping?.country || "India",
-
-        // Initialize shipping provider data
         provider: null,
-        bd: {
-          codAmount: 0,
-          logs: []
-        }
+        bd: { codAmount: 0, logs: [] }
       },
-
-      status: "pending", // ✅ Valid enum: ["pending", "paid", "shipped", "delivered", "refunded"]
+      status: "pending",
       transactions: []
     };
 
     const order = new Order(orderData);
 
-    // ✅ Apply payment mode logic from schema methods
-    if (payment?.method === "half_online_half_cod") {
+    // Payment Mode Logic
+    const isHalfPayment =
+      payment?.method === "half_online_half_cod" ||
+      payment?.method === "half_cod_half_online";
+
+    if (isHalfPayment) {
+      order.payment.paymentType = "half_online_half_cod";
       order.applyPaymentMode("half");
     } else {
       order.applyPaymentMode("full");
     }
 
     await order.save();
+    console.log('✅ [CreateOrder] SUCCESS! Order created:', order._id);
+    console.log('📋 [CreateOrder] Order items saved:', JSON.stringify(order.items, null, 2));
 
-    console.log('✅ Order created:', order._id);
-
-    // ✅ Return in the format your frontend expects
-    res.json({
-      ok: true,
-      order,
-      orderId: order._id,
-      _id: order._id  // Fallback for compatibility
-    });
+    res.json({ ok: true, order, orderId: order._id, _id: order._id });
 
   } catch (e) {
-    console.error("❌ Create order error:", e);
+    console.error("❌ [CreateOrder] ERROR:", e);
+    console.error("Stack trace:", e.stack);
     next(e);
   }
 }
@@ -169,7 +268,7 @@ export const listOrders = async (req, res, next) => {
       startDate,
       endDate
     } = req.query;
-    
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const where = {};
 
@@ -207,7 +306,7 @@ export const listOrders = async (req, res, next) => {
     // Get orders - FIXED populate fields
     const orders = await Order.find(where)
       .populate("userId", "name email phone")      // ✅ Correct: userId
-      .populate("items.bookId", "title coverImage") // ✅ Correct: bookId
+      .populate("items.bookId", "title assets") // ✅ Correct: bookId
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));

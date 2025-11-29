@@ -33,7 +33,9 @@ const OrderSchema = new Schema({
   items: [{
     bookId: { type: mongoose.Types.ObjectId, ref: "Book", required: true },
     qty: { type: Number, required: true, min: 1 },
-    unitPrice: { type: Number, required: true, min: 0 }
+    unitPrice: { type: Number, required: true, min: 0 },
+    title: String,
+    image: String
   }],
   amount: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },
@@ -42,7 +44,12 @@ const OrderSchema = new Schema({
   payment: {
     provider: { type: String, default: "razorpay" },
     mode: { type: String, enum: ["full", "half"], default: "full" },
-    paymentType: { type: String, enum: ["full_online", "half_online_half_cod", "full_cod"], default: "full_online" },
+    paymentType: {
+      type: String,
+      // Add "half_cod_half_online" to the enum if you want to support both stored in DB
+      enum: ["full_online", "half_online_half_cod", "full_cod", "half_cod_half_online"],
+      default: "full_online"
+    },
     status: { type: String, enum: ["pending", "paid", "failed", "partially_paid"], default: "pending" },
     orderId: String,
     paymentId: String,
@@ -86,7 +93,7 @@ const OrderSchema = new Schema({
       pickupScheduledAt: Date,
       pickupStatus: String,
       canceledAt: Date,
-      
+
       // ===== LABEL FIELDS (NEW - for label generation) =====
 
       labelUrl: String,
@@ -97,9 +104,9 @@ const OrderSchema = new Schema({
         enum: ["generated", "downloaded", "failed"],
         default: null
       },
-      
+
       // ====================================================
-      
+
       manifestUrl: String,
       invoiceUrl: String,
       lastTracking: Mixed,
@@ -124,7 +131,7 @@ OrderSchema.index({ "shipping.bd.awbNumber": 1 });
 OrderSchema.index({ userId: 1, createdAt: -1 });
 
 // Helper methods
-OrderSchema.methods.applyPaymentMode = function(mode = "full") {
+OrderSchema.methods.applyPaymentMode = function (mode = "full") {
   this.payment.mode = mode;
   if (mode === "full") {
     this.payment.dueOnDeliveryAmount = 0;
@@ -144,7 +151,7 @@ OrderSchema.methods.applyPaymentMode = function(mode = "full") {
   return this;
 };
 
-OrderSchema.methods.addTransaction = function(txn) {
+OrderSchema.methods.addTransaction = function (txn) {
   this.transactions.push(txn);
   if (txn.kind === "prepaid" && txn.status !== "failed") {
     this.payment.paidAmount += Number(txn.amount || 0);
@@ -160,7 +167,7 @@ OrderSchema.methods.addTransaction = function(txn) {
   return this;
 };
 
-OrderSchema.methods.recomputeDue = function() {
+OrderSchema.methods.recomputeDue = function () {
   const total = Number(this.amount || 0);
   const paid = Math.max(0, Number(this.payment.paidAmount || 0));
   this.payment.dueAmount = Math.max(0, total - paid);

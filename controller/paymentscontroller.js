@@ -112,40 +112,91 @@ export const verifyPayment = async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid signature" });
     }
 
-    // Update payment
+    // ✅ 1. UPDATE PAYMENT MODEL
     payment.providerPaymentId = razorpay_payment_id;
-    const totalAmount = payment.paidAmount + payment.pendingAmount; 
-
-    if (payment.paymentType === 'half_online_half_cod' || payment.paymentType === 'half_cod_half_online') {
-      payment.paidAmount = Math.floor(totalAmount / 2);
-      payment.pendingAmount = totalAmount - payment.paidAmount;
-      payment.status = 'partially_paid';
-    } else {
-      payment.paidAmount = totalAmount;
-      payment.pendingAmount = 0;
-      payment.status = 'paid';
-    }
-
     payment.paidAt = new Date();
     payment.verifiedAt = new Date();
+    payment.status = 'partially_paid'; // Default for half payment
+
+    // Fix Math Logic:
+    // If half payment, the 'pendingAmount' stored initially was the HALF amount (e.g., 219.5)
+    // We shouldn't divide by 2 again. We just move pending -> paid.
+    
+    if (payment.paymentType === 'half_online_half_cod' || payment.paymentType === 'half_cod_half_online') {
+       // The amount we tried to charge (pendingAmount) is now PAID.
+       // We assume the pendingAmount stored in DB was the half amount.
+       const amountJustPaid = payment.pendingAmount; 
+       
+       payment.paidAmount = amountJustPaid; 
+       payment.pendingAmount = 0; // The *online* part is no longer pending
+       payment.status = 'partially_paid';
+    } else {
+       // Full payment
+       const total = payment.pendingAmount + payment.paidAmount;
+       payment.paidAmount = total;
+       payment.pendingAmount = 0;
+       payment.status = 'paid';
+    }
+    
     await payment.save();
 
-    // Update order status
-    const order = await Order.findByIdAndUpdate(
-      payment.orderId,
-      {
-        status: payment.status === 'paid' ? 'confirmed' : 'partially_paid',
-        'payment.status': payment.status
-      },
-      { new: true }
-    );
+    // ✅ 2. SYNC ORDER MODEL (CRITICAL FIX)
+    // We must update the Order to reflect the mode and amount from the Payment
+    const order = await Order.findById(payment.orderId);
+    
+    if (order) {
+      // Force update the payment mode if it was wrong
+      if (payment.paymentType === 'half_online_half_cod' || payment.paymentType === 'half_cod_half_online') {
+        order.payment.mode = 'half';
+        order.payment.paymentType = 'half_online_half_cod';
+        order.payment.codSettlementStatus = 'pending';
+        
+        // Sync the amounts
+        order.payment.paidAmount = payment.paidAmount;
+        
+        // Calculate remaining due
+        // (Total Order Amount - What was just paid)
+        order.payment.dueOnDeliveryAmount = order.amount - payment.paidAmount;
+        
+        order.payment.status = 'partially_paid';
+        order.status = 'confirmed'; // Order is confirmed because they paid the booking amount
+        
+        // Update shipping info for BlueDart (Product Code D)
+        if(!order.shipping) order.shipping = {};
+        if(!order.shipping.bd) order.shipping.bd = {};
+        order.shipping.bd.productCode = 'D';
+        order.shipping.bd.codAmount = order.payment.dueOnDeliveryAmount;
+
+      } else {
+        // Full Payment
+        order.payment.mode = 'full';
+        order.payment.paymentType = 'full_online';
+        order.payment.paidAmount = order.amount;
+        order.payment.dueOnDeliveryAmount = 0;
+        order.payment.status = 'paid';
+        order.status = 'confirmed';
+
+        // Update shipping info for BlueDart (Product Code A)
+        if(!order.shipping) order.shipping = {};
+        if(!order.shipping.bd) order.shipping.bd = {};
+        order.shipping.bd.productCode = 'A';
+        order.shipping.bd.codAmount = 0;
+      }
+
+      // Save Razorpay details to Order
+      order.payment.paymentId = razorpay_payment_id;
+      order.payment.orderId = razorpay_order_id;
+      order.payment.signature = razorpay_signature;
+
+      await order.save();
+    }
 
     res.json({ ok: true, verified: true, payment, order });
   } catch (e) {
     console.error("verifyPayment error:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
-};
+};  
 
 export const razorpayWebhook = async (req, res) => {
   try {
