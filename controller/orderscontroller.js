@@ -40,7 +40,7 @@ export async function createOrder(req, res, next) {
     console.log("=".repeat(80));
     console.log("📦 [CreateOrder] RAW BODY:", JSON.stringify(req.body, null, 2));
     console.log("📦 [CreateOrder] Items received:", JSON.stringify(items, null, 2));
-    
+
     // ✅ CRITICAL DEBUG: Show each item's bookId
     items.forEach((item, idx) => {
       console.log(`\n📚 Item ${idx + 1}:`);
@@ -92,37 +92,37 @@ export async function createOrder(req, res, next) {
       return String(id);
     }).filter(id => {
       // ✅ CRITICAL: Filter out invalid IDs
-      const isValid = id && 
-                     id !== 'undefined' && 
-                     id !== 'null' && 
-                     mongoose.Types.ObjectId.isValid(id);
-      
+      const isValid = id &&
+        id !== 'undefined' &&
+        id !== 'null' &&
+        mongoose.Types.ObjectId.isValid(id);
+
       if (!isValid) {
         console.error(`❌ [CreateOrder] Invalid book ID detected: "${id}"`);
       }
       return isValid;
     });
-    
+
     console.log("📚 [CreateOrder] Valid book IDs to lookup:", bookIds);
 
     if (bookIds.length === 0) {
       console.error("❌ [CreateOrder] No valid book IDs found in items!");
-      return res.status(400).json({ 
-        ok: false, 
-        error: "No valid book IDs in cart items" 
+      return res.status(400).json({
+        ok: false,
+        error: "No valid book IDs in cart items"
       });
     }
 
     // 2. Fetch from DB - convert ObjectIds safely
-    const dbBooks = await Book.find({ 
-      _id: { $in: bookIds.map(id => new mongoose.Types.ObjectId(id)) } 
+    const dbBooks = await Book.find({
+      _id: { $in: bookIds.map(id => new mongoose.Types.ObjectId(id)) }
     }).lean();
-    
+
     console.log(`📚 [CreateOrder] Found ${dbBooks.length} books in database`);
 
     // 3. Create a Lookup Map - FORCE IDs TO STRING
     const bookMap = {};
-    dbBooks.forEach(b => { 
+    dbBooks.forEach(b => {
       const idString = String(b._id);
       bookMap[idString] = b;
       console.log(`📖 [CreateOrder] Mapped book ${idString}: "${b.title}"`);
@@ -133,11 +133,11 @@ export async function createOrder(req, res, next) {
       // Get ID as string to match our map
       const rawId = item.bookId || item._id;
       const bIdString = String(rawId);
-      
+
       console.log(`\n📦 [CreateOrder] Processing item ${index + 1}:`);
       console.log(`   - Raw ID from frontend: ${rawId}`);
       console.log(`   - String ID: ${bIdString}`);
-      
+
       const dbBook = bookMap[bIdString];
 
       if (!dbBook) {
@@ -200,7 +200,7 @@ export async function createOrder(req, res, next) {
       amount: amount || totals?.grandTotal || 0,
       taxAmount: totals?.taxAmount || 0,
       shippingAmount: totals?.shippingAmount || 0,
-      
+
       payment: {
         provider: payment?.provider || "razorpay",
         mode: "full",
@@ -272,14 +272,81 @@ export const listOrders = async (req, res, next) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const where = {};
 
-    // Search filter
-    if (q) {
-      where.$or = [
-        { orderNumber: { $regex: q, $options: "i" } },
-        { email: { $regex: q, $options: "i" } },
-        { "shipping.name": { $regex: q, $options: "i" } },
-        { "shipping.phone": { $regex: q, $options: "i" } }
-      ];
+    // ✅ ENHANCED SEARCH - Search across ALL fields
+    if (q && q.trim()) {
+      const searchTerm = q.trim();
+      console.log("🔍 Searching for:", searchTerm);
+
+      const searchConditions = [];
+
+      // 1. Search by Order ID (last 8 characters or full ObjectId)
+      try {
+        // Check if it's a full valid ObjectId (24 hex characters)
+        if (/^[0-9a-fA-F]{24}$/.test(searchTerm)) {
+          searchConditions.push({ _id: new mongoose.Types.ObjectId(searchTerm) });
+          console.log("✅ Searching by full ObjectId");
+        } 
+        // Search by partial ID (e.g., last 8 characters like "07b11ec8")
+        else if (searchTerm.length >= 6) {
+          // Fetch all order IDs and filter by matching end
+          const allOrders = await Order.find({}).select('_id').lean();
+          const matchingIds = allOrders
+            .filter(o => {
+              const idStr = String(o._id).toLowerCase();
+              return idStr.endsWith(searchTerm.toLowerCase()) || 
+                     idStr.includes(searchTerm.toLowerCase());
+            })
+            .map(o => o._id);
+          
+          if (matchingIds.length > 0) {
+            searchConditions.push({ _id: { $in: matchingIds } });
+            console.log(`✅ Found ${matchingIds.length} orders matching ID pattern`);
+          }
+        }
+      } catch (err) {
+        console.log("⚠️ Order ID search skipped:", err.message);
+      }
+
+      // 2. Search customer info (most common searches)
+      searchConditions.push(
+        { email: { $regex: searchTerm, $options: "i" } },
+        { phone: { $regex: searchTerm, $options: "i" } },
+        { "shipping.name": { $regex: searchTerm, $options: "i" } },
+        { "shipping.phone": { $regex: searchTerm, $options: "i" } },
+        { "shipping.email": { $regex: searchTerm, $options: "i" } },
+        { "shipping.address": { $regex: searchTerm, $options: "i" } },
+        { "shipping.city": { $regex: searchTerm, $options: "i" } },
+        { "shipping.state": { $regex: searchTerm, $options: "i" } },
+        { "shipping.pincode": { $regex: searchTerm, $options: "i" } }
+      );
+
+      // 3. Search by book title (in items array)
+      searchConditions.push(
+        { "items.title": { $regex: searchTerm, $options: "i" } }
+      );
+
+      // 4. Search by AWB number
+      searchConditions.push(
+        { "shipping.bd.awbNumber": { $regex: searchTerm, $options: "i" } }
+      );
+
+      // 5. Search by payment IDs
+      searchConditions.push(
+        { "payment.orderId": { $regex: searchTerm, $options: "i" } },
+        { "payment.paymentId": { $regex: searchTerm, $options: "i" } }
+      );
+
+      // 6. Search by amount (if numeric)
+      if (/^\d+$/.test(searchTerm)) {
+        const numericAmount = parseInt(searchTerm);
+        searchConditions.push(
+          { amount: numericAmount },
+          { "payment.paidAmount": numericAmount },
+          { "payment.dueOnDeliveryAmount": numericAmount }
+        );
+      }
+
+      where.$or = searchConditions;
     }
 
     // Status filter
@@ -298,15 +365,15 @@ export const listOrders = async (req, res, next) => {
       }
     }
 
-    console.log("🔍 Order query:", JSON.stringify(where, null, 2));
+    console.log("📋 Final query:", JSON.stringify(where, null, 2));
 
     // Get total count
     const total = await Order.countDocuments(where);
 
-    // Get orders - FIXED populate fields
+    // Get orders with populated fields
     const orders = await Order.find(where)
-      .populate("userId", "name email phone")      // ✅ Correct: userId
-      .populate("items.bookId", "title assets") // ✅ Correct: bookId
+      .populate("userId", "name email phone")
+      .populate("items.bookId", "title assets")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));

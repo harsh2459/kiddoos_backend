@@ -3,8 +3,6 @@ import jwt from "jsonwebtoken";
 // ✅ Must match customerController.js
 const JWT_SECRET = process.env.JWT_SECRET || "qwertyuioplkjhgfdsazxcvbnm12345678980jfghawfhuqy498554rf3445yt4g5426gt456654y7984gv65864984y16654y98645656465454654465rd14vg68f4165vg14df61g65df4g6514df65g4df65g16df4g6df1g6df4g4";
 
-// Debug logging (can remove after it works)
-console.log("🔐 [authCustomer] JWT_SECRET loaded:", JWT_SECRET.substring(0, 20) + "...");
 
 export default function authCustomer(req, res, next) {
   const hdr = req.headers.authorization || "";

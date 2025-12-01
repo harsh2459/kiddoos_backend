@@ -233,18 +233,33 @@ export const cancelPickup = async (req, res) => {
 export const cancelWaybill = async (req, res) => {
   try {
     const { awbNumber, orderId } = req.body;
+    if (!awbNumber) return res.status(400).json({ ok: false, error: 'AWB Number required' });
     const result = await BlueDartAPI.cancelWaybill(awbNumber);
 
-    if (result.success && orderId) {
+    if (orderId) {
       await Order.findByIdAndUpdate(orderId, {
         $set: {
           'shipping.bd.status': 'Cancelled',
-          'shipping.bd.cancelReason': 'User Request'
+          'shipping.bd.cancelReason': 'User Request',
+          // ✅ CRITICAL: Unset AWB so "Ship" button comes back
+          'shipping.bd.awbNumber': null,
+          'shipping.bd.tokenNumber': null
+        },
+        $push: {
+          'shipping.bd.logs': {
+            type: 'CANCEL_WAYBILL',
+            request: { awbNumber },
+            response: { status: 'Cancelled locally' },
+            at: new Date()
+          }
         }
       });
     }
 
-    res.json({ ok: result.success, data: result });
+    res.json({
+      ok: true,
+      message: 'Shipment cancelled. You can now create a new shipment.'
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

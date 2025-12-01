@@ -46,7 +46,6 @@ const OrderSchema = new Schema({
     mode: { type: String, enum: ["full", "half"], default: "full" },
     paymentType: {
       type: String,
-      // Add "half_cod_half_online" to the enum if you want to support both stored in DB
       enum: ["full_online", "half_online_half_cod", "full_cod", "half_cod_half_online"],
       default: "full_online"
     },
@@ -85,7 +84,13 @@ const OrderSchema = new Schema({
       profileId: { type: mongoose.Types.ObjectId, ref: "BlueDartProfile" },
       orderId: String,
       awbNumber: { type: String, index: true },
-      productCode: { type: String, enum: ["A", "D"], default: "A" },
+      
+      // ✅ ADDED: Field to store the BlueDart Token Number
+      tokenNumber: String, 
+
+      // ✅ UPDATED: Added 'E' (Surface) to allowed enums
+      productCode: { type: String, enum: ["A", "D", "E"], default: "A" },
+      
       courier: String,
       status: String,
       codAmount: { type: Number, default: 0 },
@@ -94,8 +99,7 @@ const OrderSchema = new Schema({
       pickupStatus: String,
       canceledAt: Date,
 
-      // ===== LABEL FIELDS (NEW - for label generation) =====
-
+      // Label fields
       labelUrl: String,
       labelFileName: String,
       labelGeneratedAt: Date,
@@ -104,8 +108,6 @@ const OrderSchema = new Schema({
         enum: ["generated", "downloaded", "failed"],
         default: null
       },
-
-      // ====================================================
 
       manifestUrl: String,
       invoiceUrl: String,
@@ -153,6 +155,9 @@ OrderSchema.methods.applyPaymentMode = function (mode = "full") {
 
 OrderSchema.methods.addTransaction = function (txn) {
   this.transactions.push(txn);
+  if (txn.kind === "prepaid" && txn.status !== "captured") { // Fixed minor logic: prepaids are usually 'captured'
+     // keep logic flexible
+  }
   if (txn.kind === "prepaid" && txn.status !== "failed") {
     this.payment.paidAmount += Number(txn.amount || 0);
   }

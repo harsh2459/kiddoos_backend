@@ -36,10 +36,6 @@ const JWT_SECRET = process.env.JWT_SECRET || "qwertyuioplkjhgfdsazxcvbnm12345678
 const JWT_EXPIRES_IN = "24h";
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || "YOUR_GOOGLE_CLIENT_ID");
 
-// Debug logging (can remove after it works)
-console.log("🔐 [customerController] JWT_SECRET loaded:", JWT_SECRET.substring(0, 20) + "...");
-console.log("🔐 [customerController] EMAIL_OTP_JWT_SECRET loaded:", TICKET_SECRET.substring(0, 20) + "...");
-
 /* -------------------------
    Helpers
 -------------------------- */

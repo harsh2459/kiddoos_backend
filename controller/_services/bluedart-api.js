@@ -2,7 +2,6 @@
 
 import axios from 'axios';
 import BlueDartAuth from './bluedart-auth.js';
-import BlueDartValidator from './bluedart-validation.js';
 import { BD_CONFIG } from './bluedart-config.js';
 
 class BlueDartAPI {
@@ -64,67 +63,142 @@ class BlueDartAPI {
     }
   }
 
-  // ✅ 1. CREATE WAYBILL (EXISTING - KEEP AS IS)
+  // ✅ 1. CREATE WAYBILL (FINAL FIXED VERSION WITH ROBUST PARSING)
   async createWaybill(data) {
     try {
       console.log('📦 [API] Creating waybill...');
 
       const payload = {
         Request: {
-          Consigner: {
-            ConsignerName: data.consigner.name,
-            ConsignerAddress1: data.consigner.address,
-            ConsignerAddress2: data.consigner.address2 || '',
-            ConsignerAddress3: data.consigner.address3 || '',
-            ConsignerPinCode: data.consigner.pincode,
-            ConsignerPhoneNumber: data.consigner.phone || '',
-            ConsignerMobileNumber: data.consigner.mobile,
-            ConsignerEmailAddress: data.consigner.email
-          },
           Consignee: {
             ConsigneeName: data.consignee.name,
             ConsigneeAddress1: data.consignee.address,
             ConsigneeAddress2: data.consignee.address2 || '',
             ConsigneeAddress3: data.consignee.address3 || '',
-            ConsigneePinCode: data.consignee.pincode,
-            ConsigneePhoneNumber: data.consignee.phone || '',
-            ConsigneeMobileNumber: data.consignee.mobile,
-            ConsigneeEmailAddress: data.consignee.email
+            ConsigneePincode: data.consignee.pincode,
+            ConsigneeMobile: data.consignee.mobile,
+            ConsigneeEmailID: data.consignee.email,
+            ConsigneeTelephone: data.consignee.phone || ''
+          },
+          Shipper: {
+            CustomerCode: data.creds.shipperCode || data.creds.customerCode,
+            CustomerName: data.consigner.name,
+            CustomerAddress1: data.consigner.address,
+            CustomerAddress2: data.consigner.address2 || '',
+            CustomerAddress3: data.consigner.address3 || '',
+            CustomerPincode: data.consigner.pincode,
+            CustomerMobile: data.consigner.mobile,
+            CustomerEmailID: data.consigner.email,
+            CustomerTelephone: data.consigner.phone || '',
+            OriginArea: data.creds.areaCode,
+            IsToPayCustomer: false
           },
           Services: {
-            ProductCode: data.productCode || 'D',
-            Weight: data.weight || 0.5,
+            ProductCode: data.productCode || 'A',
+            ProductType: 2, 
+            SubProductCode: 'P',
+            PieceCount: 1,
+            ActualWeight: data.weight || 0.5,
             DeclaredValue: data.declaredValue || 0,
-            CODAmount: data.codAmount || 0
+            CollectableAmount: data.codAmount || 0,
+            CreditReferenceNo: Date.now().toString(),
+            PickupDate: `/Date(${Date.now()})/`,
+            PickupTime: '1600',
+            PDFOutputNotRequired: false,
+            RegisterPickup: false,
+            IsForcePickup: false,
+            Dimensions: [{ Length: 20, Breadth: 15, Height: 5, Count: 1 }],
+            ItemCount: 1,
+            Commodity: { CommodityDetail1: 'Books', CommodityDetail2: '', CommodityDetail3: '' }
+          },
+          Returnadds: {
+            ReturnAddress1: data.consigner.address || '',
+            ReturnAddress2: data.consigner.address2 || '',
+            ReturnAddress3: data.consigner.address3 || '',
+            ReturnPincode: data.consigner.pincode || '',
+            ReturnMobile: data.consigner.mobile || '',
+            ReturnEmailID: data.consigner.email || ''
           }
+        },
+        Profile: {
+          Api_type: 'S',
+          Area: data.creds.areaCode,
+          Customercode: data.creds.loginID, 
+          LicenceKey: data.creds.licenseKey,
+          LoginID: data.creds.loginID,
+          Version: '1.3',
+          IsAdmin: '' 
         }
       };
 
-      const result = await this.apiCall('POST', '/in/transportation/waybills/v1', payload);
+      const result = await this.apiCall('POST', BD_CONFIG.endpoints.waybill, payload);
+      console.log('🔥 FULL BLUEDART RESPONSE:', JSON.stringify(result, null, 2));
 
-      if (result.WaybillOutput?.IsError === 'false') {
-        return {
+      // =========================================================
+      // ✅ ROBUST RESPONSE PARSING LOGIC
+      // =========================================================
+
+      // 1. Identify the Actual Data Object (It might be wrapped)
+      const output = result.GenerateWayBillResult || result;
+
+      // 2. Check for Direct AWB Number
+      if (output.AWBNO || output.WaybillNo) {
+         return {
           success: true,
-          awbNumber: result.WaybillOutput.AirwayBillNumber,
-          tokenNumber: result.WaybillOutput.TokenNumber,
-          codAmount: result.WaybillOutput.CODAmount || 0
+          awbNumber: output.AWBNO || output.WaybillNo,
+          tokenNumber: output.TokenNumber || '',
+          codAmount: data.codAmount || 0
         };
       }
 
-      throw new Error('Waybill creation failed');
+      // 3. Check for MPS (Multi-Piece Shipment) Details
+      // This handles cases where AWB is hidden in the array
+      if (output.MPSDetails && Array.isArray(output.MPSDetails) && output.MPSDetails.length > 0) {
+         const mpsString = output.MPSDetails[0].MPSNumber;
+         if (mpsString) {
+             const extractedAwb = mpsString.split('-')[0];
+             console.log(`✅ AWB Extracted from MPS: ${extractedAwb}`);
+             return {
+              success: true,
+              awbNumber: extractedAwb,
+              tokenNumber: output.TokenNumber || '',
+              codAmount: data.codAmount || 0
+            };
+         }
+      }
+
+      // 4. Fallback: Check Status Array for Success Message
+      if (output.Status && Array.isArray(output.Status)) {
+         const successStatus = output.Status.find(s => s.StatusCode === 'Valid');
+         if (successStatus) {
+             // If valid but no AWB found, log critical warning
+             console.error("⚠️ Response Valid but AWB Parser failed. Check structure above.");
+         }
+      }
+
+      // 5. Extract Error Message
+      let errorMsg = 'Waybill creation failed';
+      if (result['error-response']?.[0]?.Status?.[0]?.StatusInformation) {
+         errorMsg = result['error-response'][0].Status[0].StatusInformation;
+      } else if (output.Status && Array.isArray(output.Status)) {
+         errorMsg = output.Status[0].StatusInformation;
+      } else if (result.Status && Array.isArray(result.Status)) {
+         errorMsg = result.Status[0].StatusInformation;
+      }
+
+      throw new Error(errorMsg);
+
     } catch (error) {
       console.error('❌ Waybill error:', error.message);
-      throw error;
+      return { success: false, error: error.message };
     }
   }
 
-  // ✅ 2. TRACK SHIPMENT (EXISTING - KEEP AS IS)
+  // ✅ 2. TRACK SHIPMENT
   async trackShipment(awbNumber) {
     try {
       console.log('🔍 [API] Tracking shipment:', awbNumber);
-
       const result = await this.apiCall('GET', `/in/transportation/tracking/v1/${awbNumber}`);
-
       if (result.TrackingOutput?.IsError === 'false') {
         return {
           success: true,
@@ -133,7 +207,6 @@ class BlueDartAPI {
           lastUpdate: result.TrackingOutput.LastUpdate || new Date()
         };
       }
-
       return { success: false, status: 'Not Found' };
     } catch (error) {
       console.error('❌ Tracking error:', error.message);
@@ -145,7 +218,6 @@ class BlueDartAPI {
   async getTransitTime(data) {
     try {
       console.log('⏱️ [API] Getting transit time...');
-
       const payload = {
         Request: {
           OriginPinCode: data.fromPincode,
@@ -154,9 +226,7 @@ class BlueDartAPI {
           PickupDate: this.formatDate(data.pickupDate || new Date())
         }
       };
-
       const result = await this.apiCall('POST', '/in/transportation/transittime/v1', payload);
-
       if (result.TransitTimeOutput?.IsError === 'false') {
         return {
           success: true,
@@ -165,7 +235,6 @@ class BlueDartAPI {
           status: result.TransitTimeOutput.Status || 'Success'
         };
       }
-
       throw new Error(result.TransitTimeOutput?.Status || 'Transit time calculation failed');
     } catch (error) {
       console.error('❌ Transit time error:', error.message);
@@ -177,7 +246,6 @@ class BlueDartAPI {
   async schedulePickup(data) {
     try {
       console.log('📦 [API] Scheduling pickup...');
-
       const payload = {
         Request: {
           Shipper: {
@@ -203,9 +271,7 @@ class BlueDartAPI {
           }
         }
       };
-
       const result = await this.apiCall('POST', '/in/transportation/pickup/v1/RegisterPickup', payload);
-
       if (result.PickupRegistrationOutput?.IsError === 'false') {
         return {
           success: true,
@@ -215,7 +281,6 @@ class BlueDartAPI {
           status: result.PickupRegistrationOutput.Status || 'Success'
         };
       }
-
       throw new Error(result.PickupRegistrationOutput?.Status || 'Pickup registration failed');
     } catch (error) {
       console.error('❌ Pickup error:', error.message);
@@ -223,13 +288,11 @@ class BlueDartAPI {
     }
   }
 
-  // 🆕 5. CHECK SERVICEABILITY (PINCODE)
+  // 🆕 5. CHECK SERVICEABILITY
   async checkServiceability(pincode) {
     try {
       console.log('📍 [API] Checking pincode:', pincode);
-
       const result = await this.apiCall('GET', `/in/transportation/locationfinder/v1?Pincode=${pincode}`);
-
       if (result.GetServicesforPinCodeResult?.IsError === 'false') {
         const data = result.GetServicesforPinCodeResult;
         return {
@@ -247,7 +310,6 @@ class BlueDartAPI {
           }
         };
       }
-
       return {
         success: false,
         serviceable: false,
@@ -259,20 +321,17 @@ class BlueDartAPI {
     }
   }
 
-  // 🆕 6. CANCEL PICKUP (BONUS)
+  // 🆕 6. CANCEL PICKUP
   async cancelPickup(confirmationNumber, reason = 'User Requested') {
     try {
       console.log('❌ [API] Cancelling pickup:', confirmationNumber);
-
       const payload = {
         Request: {
           ConfirmationNumber: confirmationNumber,
           CancellationReason: reason
         }
       };
-
       const result = await this.apiCall('POST', '/in/transportation/pickup/v1/CancelPickup', payload);
-
       if (result.PickupCancellationOutput?.IsError === 'false') {
         return {
           success: true,
@@ -280,7 +339,6 @@ class BlueDartAPI {
           message: 'Pickup cancelled successfully'
         };
       }
-
       throw new Error(result.PickupCancellationOutput?.Status || 'Pickup cancellation failed');
     } catch (error) {
       console.error('❌ Cancel pickup error:', error.message);
@@ -288,32 +346,33 @@ class BlueDartAPI {
     }
   }
 
-  // 🆕 7. CANCEL WAYBILL/SHIPMENT (BONUS)
+  // 🆕 7. CANCEL WAYBILL
   async cancelWaybill(awbNumber, reason = 'User Requested') {
     try {
       console.log('❌ [API] Cancelling waybill:', awbNumber);
-
       const payload = {
-        Request: {
-          AWBNumber: awbNumber,
-          CancellationReason: reason
+        Request: { AWBNo: awbNumber },
+        Profile: {
+          Api_type: 'S',
+          Area: 'SUR', 
+          Customercode: 'SUR96891', 
+          LicenceKey: process.env.BLUEDART_LICENSE_KEY || 'kogqnihoth6pi4hfkgihrsujpttff7wr',
+          LoginID: 'SUR96891',
+          Version: '1.3',
+          IsAdmin: ''
         }
       };
-
+      
       const result = await this.apiCall('POST', '/in/transportation/waybill/v1/CancelWayBill', payload);
-
-      if (result.CancelWayBillOutput?.IsError === 'false') {
-        return {
-          success: true,
-          status: result.CancelWayBillOutput.Status || 'Cancelled',
-          message: 'Waybill cancelled successfully'
-        };
+      
+      if (result.IsError === false || result.IsError === 'false') {
+          return { success: true, message: 'Waybill cancelled successfully' };
       }
-
-      throw new Error(result.CancelWayBillOutput?.Status || 'Waybill cancellation failed');
+      
+      throw new Error('Cancellation failed');
     } catch (error) {
       console.error('❌ Cancel waybill error:', error.message);
-      throw error;
+      return { success: false, error: error.message };
     }
   }
 }

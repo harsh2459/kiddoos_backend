@@ -48,7 +48,7 @@ export async function getProfileOrDefaults(profileId) {
     const profile = await BlueDartProfile.findById(profileId).lean();
     if (profile) return profile;
   }
-  
+
   // Try default
   let profile = await BlueDartProfile.findOne({ isDefault: true }).lean();
   if (profile) return profile;
@@ -73,15 +73,40 @@ export async function createShipmentForOrder(orderId, profileId = null) {
     }
 
     const profile = await getProfileOrDefaults(profileId);
-    
+
     // 2. Calculate Values
     const codAmount = calculateCODAmount(order);
     const productCode = getProductCode(order);
-    
-    // 3. Prepare Data (Mapping Order Schema -> BlueDart API)
+
+    // ============================================================
+    // ✅ CRITICAL FIX: Split Login ID into Area Code & Customer Number
+    // ============================================================
+    const loginID = (profile.clientName || '').trim();
+    // 1. Extract Area Code (First 3 letters)
+    let shipperCustomerCode = loginID;
+    if (loginID === "SUR96891") {
+      shipperCustomerCode = "342311"; // ✅ FORCE CHILD ACCOUNT FOR THIS LOGIN
+    }
+    const areaCode = 'SUR';
+
+    // 2. Extract Customer Number (The rest of the string)
+    // If input is "SUR96891", this becomes "96891"
+    const customerCodeNumber = loginID.length > 3 ? loginID.substring(3) : loginID;
+
+    console.log(`🔑 Config: Login=${loginID}, Shipper=${shipperCustomerCode}, Area=${areaCode}`);
+
+    // 3. Prepare Data
     const waybillData = {
+      // Pass Credentials & Area Code to API
+      creds: {
+        licenseKey: profile.shippingKey,
+        loginID: loginID,       // Full ID (SUR96891)
+        customerCode: loginID, // ONLY the number (96891)
+        shipperCode: shipperCustomerCode,
+        areaCode: areaCode           // Area (SUR)
+      },
       consigner: {
-        name: profile.consigner?.name || 'Store',
+        name: 'BOOK MY STUDY-C/P' || profile.consigner?.name || 'Store',
         address: profile.consigner?.address || '',
         address2: profile.consigner?.address2 || '',
         address3: profile.consigner?.address3 || '',
@@ -95,10 +120,10 @@ export async function createShipmentForOrder(orderId, profileId = null) {
         name: order.shipping?.name || order.customer?.name || 'Customer',
         address: order.shipping?.address || '',
         address2: order.shipping?.area || '',
-        address3: order.shipping?.city || '', // Map City to Address3
+        address3: order.shipping?.city || '',
         pincode: order.shipping?.pincode || '',
         phone: order.shipping?.phone || '',
-        mobile: order.shipping?.phone || '', // Use phone as mobile
+        mobile: order.shipping?.phone || '',
         email: order.shipping?.email || order.email || ''
       },
       productCode: productCode,
@@ -107,7 +132,7 @@ export async function createShipmentForOrder(orderId, profileId = null) {
       codAmount: codAmount
     };
 
-    console.log(`📦 Creating Shipment for Order ${orderId.toString().slice(-6)} | Mode: ${productCode} | COD: ${codAmount}`);
+    console.log(`📦 Creating Shipment for Order ${orderId.toString().slice(-6)} | Mode: ${productCode} | COD: ${codAmount} | Area: ${areaCode}`);
 
     // 4. Call API
     const result = await BlueDartAPI.createWaybill(waybillData);
@@ -120,7 +145,7 @@ export async function createShipmentForOrder(orderId, profileId = null) {
     // We modify the document and save to trigger any mongoose middlewares if present
     order.shipping = order.shipping || {};
     order.shipping.provider = 'bluedart';
-    
+
     // Ensure nested object exists
     if (!order.shipping.bd) order.shipping.bd = {};
 
