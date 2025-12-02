@@ -1,7 +1,5 @@
 // backend/_services/bluedart-label.js
 
-import axios from 'axios';
-import BlueDartAuth from './bluedart-auth.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,12 +9,11 @@ const __dirname = path.dirname(__filename);
 
 class BlueDartLabel {
   constructor() {
-    this.baseUrl = process.env.BLUEDART_BASE_URL;
+    // Save to: project_root/uploads/labels
     this.labelsDir = path.join(__dirname, '../../uploads/labels');
     this.ensureLabelsDir();
   }
 
-  // Ensure labels directory exists
   ensureLabelsDir() {
     if (!fs.existsSync(this.labelsDir)) {
       fs.mkdirSync(this.labelsDir, { recursive: true });
@@ -24,146 +21,55 @@ class BlueDartLabel {
     }
   }
 
-  // Get label PDF from Blue Dart API
-  async getLabelFromBlueDart(awbNumber) {
+  /**
+   * ✅ NEW METHOD: Save label from the bytes/buffer received during Waybill Generation
+   */
+  async saveLabelFromContent(awbNumber, content) {
     try {
-      if (!awbNumber) {
-        throw new Error('AWB number is required');
-      }
+      if (!content || !awbNumber) throw new Error('Missing content or AWB');
 
-      console.log('🏷️ [Label] Requesting label from Blue Dart for AWB:', awbNumber);
-
-      // Get JWT token
-      const headers = await BlueDartAuth.getAuthHeaders();
-
-      // Call Blue Dart Print Label API
-      const response = await axios({
-        method: 'GET',
-        url: `${this.baseUrl}/in/transportation/waybills/v1/printlabel?AirwayBillNumber=${awbNumber}`,
-        headers: {
-          ...headers,
-          'Accept': 'application/pdf'
-        },
-        responseType: 'arraybuffer',
-        timeout: 30000,
-        validateStatus: () => true
-      });
-
-      // Check response status
-      if (response.status === 200 && response.data && response.data.length > 0) {
-        // Save PDF to server
-        const fileName = `label-${awbNumber}-${Date.now()}.pdf`;
-        const filePath = path.join(this.labelsDir, fileName);
-
-        // Write file synchronously
-        fs.writeFileSync(filePath, response.data);
-
-        console.log('✅ [Label] Saved to server:', fileName);
-
-        return {
-          success: true,
-          fileName: fileName,
-          filePath: filePath,
-          url: `/uploads/labels/${fileName}`,
-          awbNumber: awbNumber,
-          savedAt: new Date()
-        };
-      }
-
-      // Handle error response
-      const errorMsg = response.data ? response.data.toString() : 'Failed to get label from Blue Dart';
-      console.error('❌ [Label] Error response:', response.status, errorMsg);
-
-      return {
-        success: false,
-        error: 'Failed to generate label from Blue Dart. Please try again.',
-        status: response.status
-      };
-    } catch (error) {
-      console.error('❌ [Label] Error:', error.message);
-
-      return {
-        success: false,
-        error: error.message || 'Error generating label'
-      };
-    }
-  }
-
-  // Get saved label file
-  async getLabel(fileName) {
-    try {
-      if (!fileName) {
-        return { success: false, error: 'File name required' };
-      }
-
+      const fileName = `label-${awbNumber}.pdf`;
       const filePath = path.join(this.labelsDir, fileName);
 
-      // Validate file exists and is in correct directory
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: 'Label file not found' };
+      // Handle different content types (Array, Buffer, or Base64 string)
+      let buffer;
+      if (Buffer.isBuffer(content)) {
+        buffer = content;
+      } else if (Array.isArray(content)) {
+        buffer = Buffer.from(content);
+      } else if (typeof content === 'string') {
+        // Assume Base64 if string
+        buffer = Buffer.from(content, 'base64');
+      } else {
+        throw new Error('Unknown label content format');
       }
+
+      fs.writeFileSync(filePath, buffer);
+      console.log('✅ [Label] Saved locally:', fileName);
 
       return {
         success: true,
-        filePath: filePath,
-        fileName: fileName
+        fileName: fileName,
+        url: `/uploads/labels/${fileName}`, // URL accessible by frontend
+        filePath: filePath
       };
     } catch (error) {
-      console.error('❌ [Label] Get error:', error.message);
+      console.error('❌ [Label] Save Error:', error.message);
       return { success: false, error: error.message };
     }
   }
 
-  // Delete label file
-  async deleteLabel(fileName) {
-    try {
-      if (!fileName) {
-        return { success: false, error: 'File name required' };
-      }
-
-      const filePath = path.join(this.labelsDir, fileName);
-
-      // Validate file is in correct directory
-      if (!filePath.startsWith(this.labelsDir)) {
-        return { success: false, error: 'Invalid file path' };
-      }
-
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log('✅ [Label] Deleted:', fileName);
-        return { success: true, message: 'Label deleted successfully' };
-      }
-
-      return { success: false, error: 'Label file not found' };
-    } catch (error) {
-      console.error('❌ [Label] Delete error:', error.message);
-      return { success: false, error: error.message };
+  // ✅ Check if label exists locally
+  async getLabel(fileName) {
+    const filePath = path.join(this.labelsDir, fileName);
+    if (fs.existsSync(filePath)) {
+      return {
+        success: true,
+        url: `/uploads/labels/${fileName}`,
+        fileName: fileName
+      };
     }
-  }
-
-  // Clean old labels (keep last 30 days)
-  async cleanOldLabels(daysToKeep = 30) {
-    try {
-      const now = Date.now();
-      const maxAge = daysToKeep * 24 * 60 * 60 * 1000;
-
-      const files = fs.readdirSync(this.labelsDir);
-
-      files.forEach(file => {
-        const filePath = path.join(this.labelsDir, file);
-        const stat = fs.statSync(filePath);
-        const age = now - stat.mtimeMs;
-
-        if (age > maxAge) {
-          fs.unlinkSync(filePath);
-          console.log('🗑️ [Label] Cleaned old file:', file);
-        }
-      });
-
-      console.log('✅ [Label] Cleanup completed');
-    } catch (error) {
-      console.error('❌ [Label] Cleanup error:', error.message);
-    }
+    return { success: false, error: 'Label not found' };
   }
 }
 

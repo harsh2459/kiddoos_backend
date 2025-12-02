@@ -179,7 +179,7 @@ export const verifyPayment = async (req, res) => {
         // Update shipping info for BlueDart (Product Code A)
         if(!order.shipping) order.shipping = {};
         if(!order.shipping.bd) order.shipping.bd = {};
-        order.shipping.bd.productCode = 'A';
+        order.shipping.bd.productCode = 'E';
         order.shipping.bd.codAmount = 0;
       }
 

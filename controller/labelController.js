@@ -8,78 +8,37 @@ export const generateLabel = async (req, res) => {
   try {
     const { orderId } = req.params;
 
-    // Validate input
-    if (!orderId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Order ID is required'
-      });
-    }
-
-    // Get order
     const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Order not found'
-      });
+    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
+
+    const bd = order.shipping?.bd || {};
+
+    if (!bd.awbNumber) {
+      return res.status(400).json({ ok: false, error: 'Shipment not created yet.' });
     }
 
-    // Check if shipment exists
-    if (!order.shipping || !order.shipping.blueDart || !order.shipping.blueDart.awbNumber) {
-      return res.status(400).json({
-        ok: false,
-        error: 'No shipment found for this order. Please create shipment first.'
-      });
-    }
-
-    const awbNumber = order.shipping.blueDart.awbNumber;
-
-    // Get label from Blue Dart API
-    const labelResult = await BlueDartLabel.getLabelFromBlueDart(awbNumber);
-
-    if (!labelResult.success) {
-      return res.status(400).json({
-        ok: false,
-        error: labelResult.error || 'Failed to generate label'
-      });
-    }
-
-    // Update order with label information
-    await Order.findByIdAndUpdate(
-      orderId,
-      {
-        $set: {
-          'shipping.blueDart.labelUrl': labelResult.url,
-          'shipping.blueDart.labelFileName': labelResult.fileName,
-          'shipping.blueDart.labelGeneratedAt': new Date(),
-          'shipping.blueDart.labelStatus': 'generated'
+    // Check if we have the URL stored
+    if (bd.labelUrl) {
+      return res.json({
+        ok: true,
+        message: 'Label retrieved successfully',
+        data: {
+          awbNumber: bd.awbNumber,
+          downloadUrl: bd.labelUrl // Returns https://res.cloudinary.com/...
         }
-      },
-      { new: true }
-    );
+      });
+    }
 
-    console.log('✅ [Controller] Label generated and updated in DB:', orderId);
-
-    res.json({
-      ok: true,
-      message: 'Label generated successfully',
-      data: {
-        orderId: orderId,
-        awbNumber: awbNumber,
-        fileName: labelResult.fileName,
-        url: labelResult.url,
-        downloadUrl: `/api/labels/download/${labelResult.fileName}`,
-        generatedAt: labelResult.savedAt
-      }
+    // If AWB exists but no label URL, it means upload failed previously 
+    // or API didn't return content.
+    return res.status(404).json({ 
+      ok: false, 
+      error: 'Label URL not found. The shipment is booked, but the label failed to upload or was not provided by BlueDart.' 
     });
+
   } catch (error) {
-    console.error('❌ [Controller] Generate label error:', error);
-
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Error generating label'
-    });
+    console.error('❌ Label Error:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
@@ -88,39 +47,25 @@ export const downloadLabel = async (req, res) => {
   try {
     const { fileName } = req.params;
 
-    // Validate input
-    if (!fileName) {
-      return res.status(400).json({
-        ok: false,
-        error: 'File name is required'
-      });
-    }
-
-    // Get label file
+    // Use the service to check if file exists
     const result = await BlueDartLabel.getLabel(fileName);
 
     if (!result.success) {
-      return res.status(404).json({
-        ok: false,
-        error: result.error || 'Label not found'
-      });
+      return res.status(404).json({ ok: false, error: 'Label file not found on server' });
     }
 
-    // Download file
-    res.download(result.filePath, `shipping-label-${fileName}.pdf`, (err) => {
-      if (err) {
-        console.error('❌ [Controller] Download error:', err);
-      } else {
-        console.log('✅ [Controller] Label downloaded:', fileName);
-      }
-    });
-  } catch (error) {
-    console.error('❌ [Controller] Download error:', error);
+    // Construct full URL based on your server config
+    // Since app.js serves '/uploads', the URL is consistent
+    const fileUrl = `/uploads/labels/${fileName}`;
 
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Error downloading label'
+    res.json({
+      ok: true,
+      url: fileUrl,
+      fileName: fileName
     });
+
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
@@ -128,70 +73,27 @@ export const downloadLabel = async (req, res) => {
 export const getLabelInfo = async (req, res) => {
   try {
     const { fileName } = req.params;
-
-    if (!fileName) {
-      return res.status(400).json({
-        ok: false,
-        error: 'File name is required'
-      });
-    }
-
     const result = await BlueDartLabel.getLabel(fileName);
-
-    if (!result.success) {
-      return res.status(404).json({ 
-        ok: false,
-        error: result.error || 'Label not found'
-      });
-    }
     
-    res.json({
-      ok: true,
-      data: {
-        fileName: result.fileName,
-        url: `/uploads/labels/${result.fileName}`,
-        downloadUrl: `/api/labels/download/${result.fileName}`
-      }
-    });
-  } catch (error) {
-    console.error('❌ [Controller] Get label info error:', error);
+    if (!result.success) return res.status(404).json({ ok: false, error: result.error });
 
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Error getting label info'
-    });
+    res.json({ ok: true, data: result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 
-// Delete Label
+// ✅ 4. Delete Label
 export const deleteLabel = async (req, res) => {
   try {
     const { fileName } = req.params;
-
-    if (!fileName) {
-      return res.status(400).json({
-        ok: false,
-        error: 'File name is required'
-      });
-    }
-
     const result = await BlueDartLabel.deleteLabel(fileName);
 
-    if (!result.success) {
-      return res.status(404).json(result);
-    }
+    if (!result.success) return res.status(400).json({ ok: false, error: result.error });
 
-    res.json({
-      ok: true,
-      message: result.message || 'Label deleted successfully'
-    });
+    res.json({ ok: true, message: 'Label deleted successfully' });
   } catch (error) {
-    console.error('❌ [Controller] Delete error:', error);
-
-    res.status(500).json({
-      ok: false,
-      error: error.message || 'Error deleting label'
-    });
+    res.status(500).json({ ok: false, error: error.message });
   }
 };
 

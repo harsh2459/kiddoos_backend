@@ -3,63 +3,43 @@
 import Order from '../model/Order.js';
 import BlueDartProfile from '../model/BlueDartProfile.js';
 import BlueDartAPI from './_services/bluedart-api.js';
-import BlueDartHelpers from './_services/bluedart-helpers.js'; // ✅ IMPORT HELPER
+import BlueDartHelpers from './_services/bluedart-helpers.js';
 
 // ✅ 1. CREATE SHIPMENT (Single)
 export const createShipment = async (req, res) => {
   try {
     const { orderId, profileId } = req.body;
+    if (!orderId) return res.status(400).json({ ok: false, error: 'Order ID required' });
 
-    if (!orderId) {
-      return res.status(400).json({ ok: false, error: 'Order ID required' });
-    }
-
-    // Use Helper
     const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId);
 
-    if (!result.success) {
-      return res.status(400).json({ ok: false, error: result.error });
-    }
+    if (!result.success) return res.status(400).json({ ok: false, error: result.error });
 
-    res.json({
-      ok: true,
-      message: 'Shipment created successfully',
-      data: result
-    });
+    res.json({ ok: true, message: 'Shipment created successfully', data: result });
   } catch (error) {
     console.error('Create shipment error:', error);
     res.status(500).json({ ok: false, error: error.message });
   }
 };
 
-// ✅ 2. BULK CREATE SHIPMENTS
+// ✅ 2. BULK CREATE SHIPMENTS (Cleaned: No Pickup Params)
 export const bulkCreateShipments = async (req, res) => {
   try {
-    const { orderIds, profileId } = req.body;
+    // ❌ Removed pickupDate, pickupTime from destructuring
+    const { orderIds, profileId, length, breadth, height, weight } = req.body;
 
-    if (!orderIds?.length) {
-      return res.status(400).json({ ok: false, error: 'Order IDs required' });
-    }
+    if (!orderIds?.length) return res.status(400).json({ ok: false, error: 'Order IDs required' });
 
+    const customOptions = { length, breadth, height, weight };
     const results = { success: [], failed: [] };
 
-    // Process strictly sequentially to avoid rate limits
     for (const orderId of orderIds) {
       try {
-        // Use Helper for each order
-        const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId);
-
+        const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId, customOptions);
         if (result.success) {
-          results.success.push({
-            orderId,
-            awbNumber: result.awbNumber,
-            codAmount: result.codAmount
-          });
+          results.success.push({ orderId, awbNumber: result.awbNumber });
         } else {
-          results.failed.push({
-            orderId,
-            error: result.error
-          });
+          results.failed.push({ orderId, error: result.error });
         }
       } catch (err) {
         results.failed.push({ orderId, error: err.message });
@@ -84,7 +64,23 @@ export const trackShipment = async (req, res) => {
     const { awbNo } = req.params;
     if (!awbNo) return res.status(400).json({ ok: false, error: 'AWB required' });
 
+    // 1. Get latest status from Blue Dart API
     const result = await BlueDartAPI.trackShipment(awbNo);
+
+    // 2. ✅ SAVE to Database (This was missing)
+    if (result.success) {
+      await Order.findOneAndUpdate(
+        { "shipping.bd.awbNumber": awbNo },
+        {
+          $set: {
+            "shipping.bd.status": result.status, // e.g., "Shipment Delivered"
+            "shipping.bd.lastTracking": result,
+            "shipping.bd.lastTrackedAt": new Date()
+          }
+        }
+      );
+    }
+
     res.json({ ok: result.success, data: result });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -136,13 +132,8 @@ export const getOrdersForShipment = async (req, res) => {
     const orders = await Order.find({
       status: 'confirmed',
       'shipping.bd.awbNumber': { $exists: false },
-      $or: [
-        { 'payment.status': 'paid' },
-        { 'payment.status': 'partially_paid' }
-      ]
-    })
-      .sort({ createdAt: -1 });
-
+      $or: [{ 'payment.status': 'paid' }, { 'payment.status': 'partially_paid' }]
+    }).sort({ createdAt: -1 });
     res.json({ ok: true, data: orders });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -159,56 +150,10 @@ export const getTransitTime = async (req, res) => {
   }
 };
 
+// ❌ SCHEDULE PICKUP (DISABLED)
+// Kept to prevent route crash, but logic is removed.
 export const schedulePickup = async (req, res) => {
-  try {
-    const { orderIds, pickupDate, pickupTime, profileId } = req.body;
-
-    if (!orderIds?.length || !pickupDate) {
-      return res.status(400).json({ ok: false, error: 'Order IDs and pickup date required' });
-    }
-
-    // 1. Get Profile (Shipper Details)
-    // We reuse the helper to get the profile details
-    const profile = await BlueDartHelpers.getProfileOrDefaults(profileId);
-
-    // 2. Prepare Pickup Payload
-    // In a real scenario, you might want to sum up the weights of all orders
-    const pickupData = {
-      customerCode: profile.clientName,
-      customerName: profile.consigner.name,
-      address1: profile.consigner.address,
-      address2: profile.consigner.address2,
-      address3: profile.consigner.address3,
-      pincode: profile.consigner.pincode,
-      phone: profile.consigner.phone,
-      mobile: profile.consigner.mobile,
-      email: profile.consigner.email,
-      pickupDate: pickupDate,
-      pickupTime: pickupTime || '1400', // Default 2 PM
-      mode: 'SURFACE',
-      numberOfPieces: orderIds.length,
-      weight: orderIds.length * 0.5 // Estimate 0.5kg per order
-    };
-
-    // 3. Call API
-    const result = await BlueDartAPI.schedulePickup(pickupData);
-
-    // 4. Update Orders (Optional: Mark them as pickup scheduled)
-    await Order.updateMany(
-      { _id: { $in: orderIds } },
-      { $set: { 'shipping.bd.pickupScheduled': true, 'shipping.bd.pickupDate': pickupDate } }
-    );
-
-    res.json({
-      ok: true,
-      message: 'Pickup Scheduled Successfully',
-      data: result
-    });
-
-  } catch (error) {
-    console.error('Pickup Error:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
+  return res.json({ ok: false, message: 'Pickup scheduling is disabled.' });
 };
 
 export const checkServiceability = async (req, res) => {
@@ -221,27 +166,21 @@ export const checkServiceability = async (req, res) => {
 };
 
 export const cancelPickup = async (req, res) => {
-  try {
-    const { confirmationNumber } = req.body;
-    const result = await BlueDartAPI.cancelPickup(confirmationNumber);
-    res.json({ ok: result.success, data: result });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
+  return res.json({ ok: false, message: 'Pickup cancellation disabled.' });
 };
 
 export const cancelWaybill = async (req, res) => {
   try {
     const { awbNumber, orderId } = req.body;
     if (!awbNumber) return res.status(400).json({ ok: false, error: 'AWB Number required' });
-    const result = await BlueDartAPI.cancelWaybill(awbNumber);
+    
+    await BlueDartAPI.cancelWaybill(awbNumber);
 
     if (orderId) {
       await Order.findByIdAndUpdate(orderId, {
         $set: {
           'shipping.bd.status': 'Cancelled',
           'shipping.bd.cancelReason': 'User Request',
-          // ✅ CRITICAL: Unset AWB so "Ship" button comes back
           'shipping.bd.awbNumber': null,
           'shipping.bd.tokenNumber': null
         },
@@ -256,10 +195,7 @@ export const cancelWaybill = async (req, res) => {
       });
     }
 
-    res.json({
-      ok: true,
-      message: 'Shipment cancelled. You can now create a new shipment.'
-    });
+    res.json({ ok: true, message: 'Shipment cancelled. You can now create a new shipment.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

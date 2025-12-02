@@ -108,7 +108,7 @@ const OrderSchema = new Schema({
         enum: ["generated", "downloaded", "failed"],
         default: null
       },
-
+      
       manifestUrl: String,
       invoiceUrl: String,
       lastTracking: Mixed,
