@@ -17,10 +17,20 @@ const BookSchema = new mongoose.Schema({
   discountPct: { type: Number, default: 0 },
   taxRate: { type: Number, default: 0 },
   currency: { type: String, default: "INR" },
+  
   inventory: {
     sku: { type: String, index: true },
+    asin: { type: String, index: true }, // Amazon Standard Identification Number (read-only)
     stock: { type: Number, default: 0 },
     lowStockAlert: { type: Number, default: 5 }
+  },
+
+  // ✅ NEW: Shipping dimensions
+  dimensions: {
+    weight: { type: Number, default: 0 }, // in kilograms (kg)
+    length: { type: Number, default: 0 }, // in cm
+    width: { type: Number, default: 0 },  // in cm
+    height: { type: Number, default: 0 }  // in cm
   },
 
   assets: {
@@ -39,7 +49,7 @@ const BookSchema = new mongoose.Schema({
   suggestions: [{
     type: String,
     trim: true,
-    index: true  // Index for fast lookup
+    index: true
   }],
 
   visibility: { type: String, enum: ["public", "draft"], default: "public" }
@@ -48,9 +58,12 @@ const BookSchema = new mongoose.Schema({
 BookSchema.index({ title: "text", authors: "text", tags: "text", suggestions: 1 },
   {
     default_language: "english",
-    // Use a field name that you don't use anywhere to disable override:
     language_override: "__language_override_disabled"
   }
 );
+
+// ✅ Add index for SKU and ASIN search
+BookSchema.index({ "inventory.sku": 1 });
+BookSchema.index({ "inventory.asin": 1 });
 
 export default mongoose.model("Book", BookSchema);

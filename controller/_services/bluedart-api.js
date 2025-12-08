@@ -66,13 +66,18 @@ class BlueDartAPI {
   // ✅ 1. CREATE WAYBILL (With Detailed Logs)
   async createWaybill(data) {
     try {
-      console.log('📦 [API] Creating waybill...');
-
-      // 🔍 DEBUG LOG 1: Check Input Amounts
+            // 🔍 DEBUG LOG 1: Check Input Amounts
       const codAmount = Number(data.codAmount) || 0;
-      const subProductCode = codAmount > 0 ? 'C' : 'P'; 
+      const subProductCode = codAmount > 0 ? 'C' : 'P';
 
       console.log(`💰 [COD CHECK] Input: ${data.codAmount} | Parsed: ${codAmount} | SubProduct: ${subProductCode}`);
+
+      // ✅ EXTRACT DIMENSIONS FROM data.services (passed from helper)
+      const dimensions = data.services?.Dimensions || [{ Length: 20, Breadth: 15, Height: 5, Count: 1 }];
+      const actualWeight = data.services?.ActualWeight || data.weight || 0.5;
+
+      console.log('📏 [API] Using dimensions:', dimensions);
+      console.log('⚖️ [API] Using weight:', actualWeight);
 
       const payload = {
         Request: {
@@ -100,26 +105,32 @@ class BlueDartAPI {
             IsToPayCustomer: false
           },
           Services: {
-            ProductCode: data.productCode || 'E', 
-            ProductType: 2, 
-            
+            ProductCode: data.productCode || 'E',
+            ProductType: 2,
+
             // ✅ Dynamic SubProduct (C or P)
-            SubProductCode: subProductCode, 
-            
+            SubProductCode: subProductCode,
+
             PieceCount: 1,
-            ActualWeight: data.weight || 0.5,
+
+            // ✅ USE ACTUAL WEIGHT FROM HELPER
+            ActualWeight: actualWeight,
+
             DeclaredValue: data.declaredValue || 0,
-            
+
             // ✅ Ensure correct amount is sent
-            CollectableAmount: codAmount, 
-            
+            CollectableAmount: codAmount,
+
             CreditReferenceNo: Date.now().toString(),
             PickupDate: `/Date(${Date.now()})/`,
             PickupTime: '1600',
             PDFOutputNotRequired: false,
             RegisterPickup: false,
             IsForcePickup: false,
-            Dimensions: data.services?.Dimensions || [{ Length: 20, Breadth: 15, Height: 5, Count: 1 }],
+
+            // ✅ USE DIMENSIONS FROM HELPER
+            Dimensions: dimensions,
+
             ItemCount: 1,
             Commodity: { CommodityDetail1: 'Books', CommodityDetail2: '', CommodityDetail3: '' }
           },
@@ -143,13 +154,11 @@ class BlueDartAPI {
         }
       };
 
-      // 🔍 DEBUG LOG 2: Full Request Payload
-      console.log("📤 [WAYBILL REQUEST] Full Payload:", JSON.stringify(payload, null, 2));
+
 
       const result = await this.apiCall('POST', BD_CONFIG.endpoints.waybill, payload);
+
       
-      // 🔍 DEBUG LOG 3: Full Raw Response
-      console.log("📥 [WAYBILL RESPONSE] Raw Output:", JSON.stringify(result, null, 2));
 
       const output = result.GenerateWayBillResult || result;
 
@@ -259,7 +268,7 @@ class BlueDartAPI {
       const breadth = Number(data.breadth) || 15;
       const height = Number(data.height) || 5;
       const weight = Number(data.weight) || 0.5;
-      
+
       const volumetricWeight = (length * breadth * height) / 5000;
       const chargeableWeight = Math.max(weight, volumetricWeight);
 
@@ -314,7 +323,7 @@ class BlueDartAPI {
       console.log("📤 [PICKUP REQUEST] Payload:", JSON.stringify(payload, null, 2));
 
       const result = await this.apiCall('POST', '/in/transportation/pickup/v1/RegisterPickup', payload);
-      
+
       console.log("📥 [PICKUP RESPONSE] Raw Output:", JSON.stringify(result, null, 2));
 
       const output = result.PickupRegistrationOutput || result;
@@ -371,7 +380,7 @@ class BlueDartAPI {
   }
 
   async cancelPickup(confirmationNumber, reason = 'User Requested') {
-    return { success: true, message: 'Pickup cancelled (mock)' }; 
+    return { success: true, message: 'Pickup cancelled (mock)' };
   }
 
   async cancelWaybill(awbNumber, reason = 'User Requested') {

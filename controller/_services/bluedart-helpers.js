@@ -5,6 +5,20 @@ import BlueDartProfile from '../../model/BlueDartProfile.js';
 import BlueDartAPI from './bluedart-api.js';
 import CloudinaryUploader from './cloudinary-uploader.js';
 
+
+function formatBlueDartAddress(fullAddress, city) {
+  const cleanAddr = (fullAddress || "").replace(/\s+/g, " ").trim();
+
+  // BlueDart Limit is usually 30 chars per line
+  const limit = 30;
+
+  let addr1 = cleanAddr.substring(0, limit);
+  let addr2 = cleanAddr.substring(limit, limit * 2);
+  let addr3 = city || cleanAddr.substring(limit * 2, limit * 3); // Use City in Line 3 if available
+
+  return { addr1, addr2, addr3 };
+}
+
 // ✅ Helper 1: Calculate COD amount based on Payment Schema
 export function calculateCODAmount(order) {
   const totalAmount = order.amount || 0;
@@ -41,7 +55,7 @@ export async function getProfileOrDefaults(profileId) {
   throw new Error('No Blue Dart profile found. Please create one in settings.');
 }
 
-// ✅ Helper 4: The Main Shipment Creator (NO PICKUP)
+// ✅ Helper 4: The Main Shipment Creator (FIXED DIMENSIONS)
 export async function createShipmentForOrder(orderId, profileId = null, options = {}) {
   try {
     const order = await Order.findById(orderId);
@@ -62,12 +76,16 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
       shipperCustomerCode = "342311";
     }
     const areaCode = 'SUR';
-
-    // Dimensions & Weight
+    const fullAddress = order.shipping?.address || '';
+    const city = order.shipping?.city || '';
+    const { addr1, addr2, addr3 } = formatBlueDartAddress(fullAddress, city);
+    // ✅ FIXED: Parse dimensions from options with proper fallbacks
     const length = Number(options.length) || 20;
     const breadth = Number(options.breadth) || 15;
     const height = Number(options.height) || 5;
     const weight = Number(options.weight) || order.shipping?.weight || 0.5;
+
+    console.log('📦 [HELPER] Dimensions received:', { length, breadth, height, weight });
 
     const consigner = {
       name: profile.consigner?.name || 'BOOK MY STUDY-C/P',
@@ -91,23 +109,31 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
       consigner: consigner,
       consignee: {
         name: order.shipping?.name || order.customer?.name || 'Customer',
-        address: order.shipping?.address || '',
-        address2: order.shipping?.area || '',
-        address3: order.shipping?.city || '',
+        address: addr1 || '',
+        address2: addr2 || '',
+        address3: addr3 || '',
         pincode: order.shipping?.pincode || '',
         phone: order.shipping?.phone || '',
         mobile: order.shipping?.phone || '',
         email: order.shipping?.email || order.email || ''
       },
       productCode: productCode,
-      weight: order.shipping?.weight || profile.defaults?.weight || 0.5,
+      weight: weight,  // ✅ Use parsed weight
       declaredValue: order.amount || 0,
       codAmount: codAmount,
+      // ✅ FIXED: Pass dimensions explicitly
       services: {
         ActualWeight: weight,
-        Dimensions: [{ Length: length, Breadth: breadth, Height: height, Count: 1 }],
+        Dimensions: [{
+          Length: length,
+          Breadth: breadth,
+          Height: height,
+          Count: 1
+        }]
       }
     };
+
+    console.log('📤 [HELPER] Sending to BlueDart API:', JSON.stringify(waybillData.services, null, 2));
 
     // 1. CALL CREATE WAYBILL API
     const result = await BlueDartAPI.createWaybill(waybillData);
@@ -115,8 +141,6 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
     if (!result.success) {
       throw new Error(result.error || 'BlueDart API failed to create waybill');
     }
-
-    // --- ❌ PICKUP SCHEDULING REMOVED HERE --- 
 
     // 2. UPLOAD LABEL TO CLOUDINARY
     let labelUrl = null;
@@ -161,11 +185,17 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
     order.shipping.bd.createdAt = new Date();
     order.shipping.bd.profileId = profile._id;
 
+    // ✅ SAVE DIMENSIONS IN DATABASE
+    order.shipping.bd.dimensions = {
+      length: length,
+      breadth: breadth,
+      height: height,
+      weight: weight
+    };
+
     order.shipping.bd.labelUrl = labelUrl;
     order.shipping.bd.labelStatus = labelStatus;
     order.shipping.bd.labelGeneratedAt = new Date();
-
-    // ❌ Removed pickup info (token, date) from DB update
 
     order.status = 'shipped';
 

@@ -7,13 +7,14 @@ const PaymentSchema = new Schema({
   provider: { type: String, default: 'razorpay' },
   providerOrderId: { type: String },
   providerPaymentId: { type: String },
-  status: { type: String, enum: ['created', 'pending', 'partially_paid', 'paid', 'failed'], default: 'created' },
+  status: { type: String, enum: ['created', 'pending', 'partially_paid', 'paid', 'failed', 'partially_refunded', 'refunded'], default: 'created' },
   paidAmount: { type: Number, default: 0 },
   pendingAmount: { type: Number, default: 0 },
   currency: { type: String, default: 'INR' },
   createdAt: { type: Date, default: Date.now },
   paidAt: { type: Date },
   verifiedAt: { type: Date },
+  refundedAt: { type: Date },
   rawResponse: { type: Object },
 });
 

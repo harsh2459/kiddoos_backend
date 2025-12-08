@@ -463,6 +463,7 @@ async function uniqueSlugFrom(title) {
 
 // In BooksController.js - Replace the listBooks function with this:
 
+
 export const listBooks = async (req, res, next) => {
   try {
     console.log("📥 Request query params:", req.query);
@@ -470,7 +471,7 @@ export const listBooks = async (req, res, next) => {
     const {
       q = "",
       limit = 50,
-      page = 1, // ✅ Added pagination
+      page = 1,
       sort = "new",
       visibility = "all"
     } = req.query;
@@ -484,12 +485,14 @@ export const listBooks = async (req, res, next) => {
 
     const where = {};
 
-    // Search filter
+    // ✅ Updated search filter to include SKU and ASIN
     if (q) {
       where.$or = [
         { title: { $regex: q, $options: "i" } },
         { authors: { $regex: q, $options: "i" } },
         { tags: { $regex: q, $options: "i" } },
+        { "inventory.sku": { $regex: q, $options: "i" } }, // ✅ Search by SKU
+        { "inventory.asin": { $regex: q, $options: "i" } }, // ✅ Search by ASIN
       ];
     }
 
@@ -511,26 +514,22 @@ export const listBooks = async (req, res, next) => {
 
     console.log("🔎 Final MongoDB query:", JSON.stringify(where));
 
-    // ✅ Calculate pagination
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 50;
     const skip = (pageNum - 1) * limitNum;
 
-    // ✅ Get total count (for pagination info)
     const total = await Book.countDocuments(where);
 
-    // ✅ Get paginated results
     const sortBy = sort === "new" ? { createdAt: -1 } : { title: 1 };
     const items = await Book.find(where)
       .sort(sortBy)
       .skip(skip)
       .limit(limitNum);
 
-    // ✅ Return with pagination metadata
     res.json({
       ok: true,
       items,
-      total, // Total number of books matching the query
+      total,
       page: pageNum,
       limit: limitNum,
       totalPages: Math.ceil(total / limitNum)
@@ -540,7 +539,6 @@ export const listBooks = async (req, res, next) => {
     next(e);
   }
 };
-
 export const getBook = async (req, res) => {
   const book = await Book.findOne({ slug: req.params.slug, visibility: "public" });
   if (!book) return res.status(404).json({ ok: false, error: "Not found" });

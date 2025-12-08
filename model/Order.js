@@ -1,11 +1,7 @@
 // model/Order.js
-
 import mongoose from "mongoose";
-
 const { Schema } = mongoose;
-
 const Mixed = Schema.Types.Mixed;
-
 const BdLogSchema = new Schema({
   type: String,
   at: { type: Date, default: Date.now },
@@ -49,7 +45,7 @@ const OrderSchema = new Schema({
       enum: ["full_online", "half_online_half_cod", "full_cod", "half_cod_half_online"],
       default: "full_online"
     },
-    status: { type: String, enum: ["pending", "paid", "failed", "partially_paid"], default: "pending" },
+    status: { type: String, enum: ["pending", "paid", "failed", "partially_paid", "partially_refunded", "refunded"], default: "pending" },
     orderId: String,
     paymentId: String,
     signature: String,
@@ -82,7 +78,7 @@ const OrderSchema = new Schema({
     provider: { type: String, default: null },
     bd: {
       profileId: { type: mongoose.Types.ObjectId, ref: "BlueDartProfile" },
-      orderId: String,
+      orderId: String,  
       awbNumber: { type: String, index: true },
       
       // ✅ ADDED: Field to store the BlueDart Token Number
