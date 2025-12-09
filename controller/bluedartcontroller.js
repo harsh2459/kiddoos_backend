@@ -6,11 +6,13 @@ import BlueDartAPI from './_services/bluedart-api.js';
 import BlueDartHelpers from './_services/bluedart-helpers.js';
 
 // ✅ 1. CREATE SHIPMENT (Single)
+// ✅ 1. CREATE SHIPMENT (Single)
 export const createShipment = async (req, res) => {
   try {
     const { orderId, profileId } = req.body;
     if (!orderId) return res.status(400).json({ ok: false, error: 'Order ID required' });
 
+    // Helper now auto-calculates dimensions based on order items
     const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId);
 
     if (!result.success) return res.status(400).json({ ok: false, error: result.error });
@@ -22,24 +24,33 @@ export const createShipment = async (req, res) => {
   }
 };
 
-// ✅ 2. BULK CREATE SHIPMENTS (Cleaned: No Pickup Params)
+// ✅ 2. BULK CREATE SHIPMENTS (Smart Auto-Calculation)
 export const bulkCreateShipments = async (req, res) => {
   try {
-    // ❌ Removed pickupDate, pickupTime from destructuring
-    const { orderIds, profileId, length, breadth, height, weight } = req.body;
+    const { orderIds, profileId } = req.body;
 
     if (!orderIds?.length) return res.status(400).json({ ok: false, error: 'Order IDs required' });
 
-    const customOptions = { length, breadth, height, weight };
+    console.log(`📦 [Bulk Create] Processing ${orderIds.length} orders...`);
+
     const results = { success: [], failed: [] };
 
+    // Process sequentially to avoid API rate limits (though BD is usually fine)
     for (const orderId of orderIds) {
       try {
-        const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId, customOptions);
+        // We do NOT pass manual dimensions here. 
+        // The helper will open the order, count items, and calculate weight/height.
+        const result = await BlueDartHelpers.createShipmentForOrder(orderId, profileId);
+
         if (result.success) {
           results.success.push({ orderId, awbNumber: result.awbNumber });
         } else {
-          results.failed.push({ orderId, error: result.error });
+          results.failed.push({
+            orderId,
+            error: result.error,
+            details: result.details || null,
+            rawResponse: result.rawResponse || null
+          });
         }
       } catch (err) {
         results.failed.push({ orderId, error: err.message });
@@ -48,7 +59,7 @@ export const bulkCreateShipments = async (req, res) => {
 
     res.json({
       ok: true,
-      message: `Success: ${results.success.length}, Failed: ${results.failed.length}`,
+      message: `Processed: ${results.success.length} Success, ${results.failed.length} Failed`,
       data: results
     });
 
@@ -173,7 +184,7 @@ export const cancelWaybill = async (req, res) => {
   try {
     const { awbNumber, orderId } = req.body;
     if (!awbNumber) return res.status(400).json({ ok: false, error: 'AWB Number required' });
-    
+
     await BlueDartAPI.cancelWaybill(awbNumber);
 
     if (orderId) {

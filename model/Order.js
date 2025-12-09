@@ -36,6 +36,7 @@ const OrderSchema = new Schema({
   amount: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },
   shippingAmount: { type: Number, default: 0 },
+  serviceFee: { type: Number, default: 0 },
   couponId: { type: mongoose.Types.ObjectId, ref: "Coupon" },
   payment: {
     provider: { type: String, default: "razorpay" },

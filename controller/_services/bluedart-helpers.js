@@ -5,21 +5,67 @@ import BlueDartProfile from '../../model/BlueDartProfile.js';
 import BlueDartAPI from './bluedart-api.js';
 import CloudinaryUploader from './cloudinary-uploader.js';
 
-
 function formatBlueDartAddress(fullAddress, city) {
   const cleanAddr = (fullAddress || "").replace(/\s+/g, " ").trim();
-
-  // BlueDart Limit is usually 30 chars per line
-  const limit = 30;
-
+  const limit = 30; // BlueDart char limit per line
+  
   let addr1 = cleanAddr.substring(0, limit);
   let addr2 = cleanAddr.substring(limit, limit * 2);
-  let addr3 = city || cleanAddr.substring(limit * 2, limit * 3); // Use City in Line 3 if available
+  let addr3 = city || cleanAddr.substring(limit * 2, limit * 3);
 
   return { addr1, addr2, addr3 };
 }
 
-// ✅ Helper 1: Calculate COD amount based on Payment Schema
+// ✅ UPDATED: Calculate Dimensions strictly from Profile Defaults (No Hardcoding)
+export function calculateOrderDimensions(order, profile) {
+  // 1. Extract Defaults from Profile (Database)
+  // If profile is missing, these fallbacks prevent crash, but DB values take priority.
+  const dbWeight = Number(profile?.defaults?.weight) || 0.5;
+  const dbLength = Number(profile?.defaults?.length) || 20;
+  const dbBreadth = Number(profile?.defaults?.breadth) || 15;
+  const dbHeight = Number(profile?.defaults?.height) || 3;
+
+  // 2. Calculate Total Weight based on REAL Book weights (if available) or Profile Default
+  let totalWeight = 0;
+  let totalQty = 0;
+
+  if (order.items && order.items.length > 0) {
+    totalWeight = order.items.reduce((sum, item) => {
+      const qty = Number(item.qty) || 1;
+      
+      // Check if specific book has weight, otherwise use profile default
+      const itemWeight = Number(item.bookId?.weight) > 0 
+        ? Number(item.bookId.weight) 
+        : dbWeight;
+
+      totalQty += qty;
+      return sum + (itemWeight * qty);
+    }, 0);
+  } else {
+    // Fallback if no items found
+    totalWeight = dbWeight; 
+    totalQty = 1;
+  }
+
+  // 3. Calculate Final Specs
+  // Height grows with stack size: (Qty * DB Height) + 2cm Packaging Buffer
+  const PACKING_BUFFER_CM = 2;
+  const calculatedHeight = Math.ceil((totalQty * dbHeight) + PACKING_BUFFER_CM);
+
+  console.log(`📏 [Auto-Calc] Order ${order._id} (Qty: ${totalQty})`);
+  console.log(`   - Profile Used: ${profile?.label || 'Unknown'}`);
+  console.log(`   - Base Weight: ${dbWeight}kg | Base Height: ${dbHeight}cm`);
+  console.log(`   - Final Calc: ${totalWeight.toFixed(2)}kg | ${dbLength}x${dbBreadth}x${calculatedHeight}cm`);
+
+  return {
+    weight: Math.max(0.5, Number(totalWeight.toFixed(2))), // BlueDart min 0.5kg
+    length: dbLength,
+    breadth: dbBreadth,
+    height: calculatedHeight
+  };
+}
+
+// ✅ Helper: Calculate COD amount
 export function calculateCODAmount(order) {
   const totalAmount = order.amount || 0;
   const paidAmount = order.payment?.paidAmount || 0;
@@ -37,12 +83,7 @@ export function calculateCODAmount(order) {
   return 0;
 }
 
-// ✅ Helper 2: Determine Product Code (A=Prepaid, D=COD)
-export function getProductCode(order) {
-  return 'A'
-}
-
-// ✅ Helper 3: Get Profile
+// ✅ Helper: Get Profile
 export async function getProfileOrDefaults(profileId) {
   if (profileId) {
     const profile = await BlueDartProfile.findById(profileId).lean();
@@ -55,10 +96,11 @@ export async function getProfileOrDefaults(profileId) {
   throw new Error('No Blue Dart profile found. Please create one in settings.');
 }
 
-// ✅ Helper 4: The Main Shipment Creator (FIXED DIMENSIONS)
+// ✅ Main Shipment Creator
 export async function createShipmentForOrder(orderId, profileId = null, options = {}) {
   try {
-    const order = await Order.findById(orderId);
+    // ✅ CRITICAL: Populate 'items.bookId' to get the Book Weight
+    const order = await Order.findById(orderId).populate('items.bookId');
     if (!order) throw new Error(`Order not found: ${orderId}`);
 
     if (order.shipping?.bd?.awbNumber) {
@@ -67,7 +109,7 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
 
     const profile = await getProfileOrDefaults(profileId);
     const codAmount = calculateCODAmount(order);
-    const productCode = getProductCode(order);
+    const productCode = codAmount > 0 ? 'D' : 'A';
 
     // Child Account Logic
     const loginID = (profile.clientName || '').trim();
@@ -76,27 +118,13 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
       shipperCustomerCode = "342311";
     }
     const areaCode = 'SUR';
+    
     const fullAddress = order.shipping?.address || '';
     const city = order.shipping?.city || '';
     const { addr1, addr2, addr3 } = formatBlueDartAddress(fullAddress, city);
-    // ✅ FIXED: Parse dimensions from options with proper fallbacks
-    const length = Number(options.length) || 20;
-    const breadth = Number(options.breadth) || 15;
-    const height = Number(options.height) || 5;
-    const weight = Number(options.weight) || order.shipping?.weight || 0.5;
 
-    console.log('📦 [HELPER] Dimensions received:', { length, breadth, height, weight });
-
-    const consigner = {
-      name: profile.consigner?.name || 'BOOK MY STUDY-C/P',
-      address: profile.consigner?.address || '',
-      address2: profile.consigner?.address2 || '',
-      address3: profile.consigner?.address3 || '',
-      pincode: profile.consigner?.pincode || '',
-      phone: profile.consigner?.phone || '',
-      mobile: profile.consigner?.mobile || '',
-      email: profile.consigner?.email || ''
-    };
+    // ✅ Get Dimensions from Profile
+    const specs = calculateOrderDimensions(order, profile);
 
     const waybillData = {
       creds: {
@@ -106,7 +134,16 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
         shipperCode: shipperCustomerCode,
         areaCode: areaCode
       },
-      consigner: consigner,
+      consigner: {
+        name: profile.consigner?.name || 'BOOK MY STUDY-C/P',
+        address: profile.consigner?.address || '',
+        address2: profile.consigner?.address2 || '',
+        address3: profile.consigner?.address3 || '',
+        pincode: profile.consigner?.pincode || '',
+        phone: profile.consigner?.phone || '',
+        mobile: profile.consigner?.mobile || '',
+        email: profile.consigner?.email || ''
+      },
       consignee: {
         name: order.shipping?.name || order.customer?.name || 'Customer',
         address: addr1 || '',
@@ -118,16 +155,15 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
         email: order.shipping?.email || order.email || ''
       },
       productCode: productCode,
-      weight: weight,  // ✅ Use parsed weight
-      declaredValue: order.amount || 0,
+      weight: specs.weight,
+      declaredValue: order.amount || 500,
       codAmount: codAmount,
-      // ✅ FIXED: Pass dimensions explicitly
       services: {
-        ActualWeight: weight,
+        ActualWeight: specs.weight,
         Dimensions: [{
-          Length: length,
-          Breadth: breadth,
-          Height: height,
+          Length: specs.length,
+          Breadth: specs.breadth,
+          Height: specs.height,
           Count: 1
         }]
       }
@@ -142,13 +178,14 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
       throw new Error(result.error || 'BlueDart API failed to create waybill');
     }
 
-    // 2. UPLOAD LABEL TO CLOUDINARY
+    // 2. UPLOAD LABEL TO CLOUDINARY (STANDARD A4 - NO CROP)
     let labelUrl = null;
     let labelStatus = 'failed';
 
     if (result.awbPrintContent) {
       try {
-        console.log(`☁️ Uploading label for AWB ${result.awbNumber} to Cloudinary...`);
+        console.log(`☁️ Uploading label for AWB ${result.awbNumber}...`);
+        
         let pdfBuffer;
         if (Buffer.isBuffer(result.awbPrintContent)) {
           pdfBuffer = result.awbPrintContent;
@@ -180,17 +217,16 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
     order.shipping.bd.awbNumber = result.awbNumber;
     order.shipping.bd.tokenNumber = result.tokenNumber;
     order.shipping.bd.codAmount = result.codAmount;
-    order.shipping.bd.productCode = getProductCode(order);
+    order.shipping.bd.productCode = productCode;
     order.shipping.bd.status = 'Booked';
     order.shipping.bd.createdAt = new Date();
     order.shipping.bd.profileId = profile._id;
 
-    // ✅ SAVE DIMENSIONS IN DATABASE
     order.shipping.bd.dimensions = {
-      length: length,
-      breadth: breadth,
-      height: height,
-      weight: weight
+      length: specs.length,
+      breadth: specs.breadth,
+      height: specs.height,
+      weight: specs.weight
     };
 
     order.shipping.bd.labelUrl = labelUrl;
@@ -216,7 +252,7 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
 
 export default {
   calculateCODAmount,
-  getProductCode,
+  calculateOrderDimensions,
   getProfileOrDefaults,
   createShipmentForOrder
 };

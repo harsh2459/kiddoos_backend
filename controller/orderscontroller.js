@@ -21,7 +21,7 @@ export async function onOrderPaid(order) {
     await sendBySlug("order_paid", customer.email, {
       name: customer.name || "there",
       order_id: order._id,
-      amount: order.totals?.grandTotal || order.amount,
+      amount: order.amount,
       items: order.items?.length || 0,
       order_date: new Date(order.createdAt).toLocaleDateString('en-IN'),
     });
@@ -33,36 +33,21 @@ export async function onOrderPaid(order) {
 
 export async function createOrder(req, res, next) {
   try {
-    let { customerId, customer, items, shipping, payment, totals, amount, currency } = req.body;
+    // ✅ Extract shippingFee and serviceFee separately
+    let { customerId, customer, items, shipping, payment, totals, amount, currency, shippingFee, serviceFee } = req.body;
 
     console.log("\n" + "=".repeat(80));
     console.log("🛒 [CreateOrder] Processing new order...");
     console.log("=".repeat(80));
-    console.log("📦 [CreateOrder] RAW BODY:", JSON.stringify(req.body, null, 2));
-    console.log("📦 [CreateOrder] Items received:", JSON.stringify(items, null, 2));
-
-    // ✅ CRITICAL DEBUG: Show each item's bookId
-    items.forEach((item, idx) => {
-      console.log(`\n📚 Item ${idx + 1}:`);
-      console.log(`   - bookId: ${item.bookId}`);
-      console.log(`   - _id: ${item._id}`);
-      console.log(`   - title: ${item.title}`);
-      console.log(`   - Full item:`, item);
-    });
 
     // 1. Guest Customer Logic
     if (!customerId && customer) {
       let existingCustomer = await Customer.findOne({
-        $or: [
-          { phone: customer.phone },
-          ...(customer.email ? [{ email: customer.email }] : [])
-        ].filter(Boolean)
+        $or: [{ phone: customer.phone }, ...(customer.email ? [{ email: customer.email }] : [])].filter(Boolean)
       });
-
       if (!existingCustomer) {
         const tempPassword = crypto.randomBytes(8).toString('hex');
         const passwordHash = crypto.createHash('sha256').update(tempPassword).digest('hex');
-
         existingCustomer = new Customer({
           name: customer.name || "",
           email: (customer.email && customer.email.trim() !== "") ? customer.email : undefined,
@@ -71,7 +56,6 @@ export async function createOrder(req, res, next) {
           isGuest: true,
           emailVerified: false
         });
-
         await existingCustomer.save();
       }
       customerId = existingCustomer._id;
@@ -81,125 +65,44 @@ export async function createOrder(req, res, next) {
       return res.status(400).json({ ok: false, error: "Missing customer or items" });
     }
 
-    // =========================================================
-    // ✅ CRITICAL FIX: FETCH BOOK DETAILS WITH PROPER ID HANDLING
-    // =========================================================
+    // 2. Fetch Books
+    const bookIds = items.map(i => String(i.bookId || i._id)).filter(id => mongoose.Types.ObjectId.isValid(id));
+    if (bookIds.length === 0) return res.status(400).json({ ok: false, error: "No valid book IDs" });
 
-    // 1. Extract IDs and convert to strings for consistent matching
-    const bookIds = items.map(i => {
-      const id = i.bookId || i._id;
-      // ✅ Convert to string to ensure consistent comparison
-      return String(id);
-    }).filter(id => {
-      // ✅ CRITICAL: Filter out invalid IDs
-      const isValid = id &&
-        id !== 'undefined' &&
-        id !== 'null' &&
-        mongoose.Types.ObjectId.isValid(id);
-
-      if (!isValid) {
-        console.error(`❌ [CreateOrder] Invalid book ID detected: "${id}"`);
-      }
-      return isValid;
-    });
-
-    console.log("📚 [CreateOrder] Valid book IDs to lookup:", bookIds);
-
-    if (bookIds.length === 0) {
-      console.error("❌ [CreateOrder] No valid book IDs found in items!");
-      return res.status(400).json({
-        ok: false,
-        error: "No valid book IDs in cart items"
-      });
-    }
-
-    // 2. Fetch from DB - convert ObjectIds safely
-    const dbBooks = await Book.find({
-      _id: { $in: bookIds.map(id => new mongoose.Types.ObjectId(id)) }
-    }).lean();
-
-    console.log(`📚 [CreateOrder] Found ${dbBooks.length} books in database`);
-
-    // 3. Create a Lookup Map - FORCE IDs TO STRING
+    const dbBooks = await Book.find({ _id: { $in: bookIds.map(id => new mongoose.Types.ObjectId(id)) } }).lean();
     const bookMap = {};
-    dbBooks.forEach(b => {
-      const idString = String(b._id);
-      bookMap[idString] = b;
-      console.log(`📖 [CreateOrder] Mapped book ${idString}: "${b.title}"`);
-    });
+    dbBooks.forEach(b => { bookMap[String(b._id)] = b; });
 
-    // 4. Map the items and FORCE the data from the DB
-    const validItems = items.map((item, index) => {
-      // Get ID as string to match our map
-      const rawId = item.bookId || item._id;
-      const bIdString = String(rawId);
-
-      console.log(`\n📦 [CreateOrder] Processing item ${index + 1}:`);
-      console.log(`   - Raw ID from frontend: ${rawId}`);
-      console.log(`   - String ID: ${bIdString}`);
-
-      const dbBook = bookMap[bIdString];
-
-      if (!dbBook) {
-        console.error(`❌ [CreateOrder] CRITICAL: Book ID ${bIdString} not found in DB!`);
-        console.error(`   - Available IDs in map:`, Object.keys(bookMap));
-      } else {
-        console.log(`   ✅ Book found: "${dbBook.title}"`);
-      }
-
-      // --- IMAGE EXTRACTION LOGIC ---
+    const validItems = items.map((item) => {
+      const rawId = String(item.bookId || item._id);
+      const dbBook = bookMap[rawId];
       let imgUrl = "";
       if (dbBook?.assets?.coverUrl) {
-        if (Array.isArray(dbBook.assets.coverUrl) && dbBook.assets.coverUrl.length > 0) {
-          // ✅ TAKE THE FIRST IMAGE (Your Cloudinary URLs are in an array)
-          imgUrl = dbBook.assets.coverUrl[0];
-          console.log(`   ✅ Image extracted: ${imgUrl.substring(0, 60)}...`);
-        } else if (typeof dbBook.assets.coverUrl === "string") {
-          imgUrl = dbBook.assets.coverUrl;
-          console.log(`   ✅ Image (string): ${imgUrl.substring(0, 60)}...`);
-        }
+        imgUrl = Array.isArray(dbBook.assets.coverUrl) ? dbBook.assets.coverUrl[0] : dbBook.assets.coverUrl;
       }
-
-      if (dbBook && !imgUrl) {
-        console.warn(`   ⚠️ Book "${dbBook.title}" found, but HAS NO IMAGE in DB.`);
-        console.warn(`   - assets object:`, JSON.stringify(dbBook.assets, null, 2));
-      }
-
-      // --- TITLE & PRICE LOGIC ---
-      const realTitle = dbBook?.title || item.title || "Unknown Item";
-      const realPrice = Number(item.price) > 0 ? Number(item.price) : (dbBook?.price || 0);
-
-      const processedItem = {
+      return {
         bookId: rawId,
         qty: Number(item.qty) || 1,
-        unitPrice: realPrice,
-        title: realTitle,
-        image: imgUrl || ""  // ✅ SAVE THE IMAGE URL
+        unitPrice: Number(item.price) > 0 ? Number(item.price) : (dbBook?.price || 0),
+        title: dbBook?.title || item.title || "Unknown Item",
+        image: imgUrl || ""
       };
-
-      console.log(`   📋 Final processed item:`, JSON.stringify(processedItem, null, 2));
-      return processedItem;
     });
 
-    console.log("\n✅ [CreateOrder] All items processed successfully");
-    console.log("📋 [CreateOrder] Final items array:", JSON.stringify(validItems, null, 2));
-
-    // =========================================================
-    // END OF BOOK FETCHING
-    // =========================================================
-
-    // Payment Status Logic
+    // 3. Construct Order Data
     let paymentStatus = "pending";
     if (payment?.status === "created") paymentStatus = "pending";
     else if (["pending", "paid", "failed"].includes(payment?.status)) paymentStatus = payment.status;
 
-    // Construct Order Data
     const orderData = {
       userId: customerId,
-      items: validItems, // ✅ Use the fixed items with images
+      items: validItems,
       amount: amount || totals?.grandTotal || 0,
       taxAmount: totals?.taxAmount || 0,
-      shippingAmount: totals?.shippingAmount || 0,
+      
+      // ✅ Map frontend fees to DB fields correctly
+      shippingAmount: shippingFee || 0,
+      serviceFee: serviceFee || 0,
 
       payment: {
         provider: payment?.provider || "razorpay",
@@ -234,10 +137,7 @@ export async function createOrder(req, res, next) {
     const order = new Order(orderData);
 
     // Payment Mode Logic
-    const isHalfPayment =
-      payment?.method === "half_online_half_cod" ||
-      payment?.method === "half_cod_half_online";
-
+    const isHalfPayment = payment?.method === "half_online_half_cod" || payment?.method === "half_cod_half_online";
     if (isHalfPayment) {
       order.payment.paymentType = "half_online_half_cod";
       order.applyPaymentMode("half");
@@ -247,13 +147,10 @@ export async function createOrder(req, res, next) {
 
     await order.save();
     console.log('✅ [CreateOrder] SUCCESS! Order created:', order._id);
-    console.log('📋 [CreateOrder] Order items saved:', JSON.stringify(order.items, null, 2));
-
     res.json({ ok: true, order, orderId: order._id, _id: order._id });
 
   } catch (e) {
     console.error("❌ [CreateOrder] ERROR:", e);
-    console.error("Stack trace:", e.stack);
     next(e);
   }
 }
