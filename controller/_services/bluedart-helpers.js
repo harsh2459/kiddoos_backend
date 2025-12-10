@@ -5,9 +5,12 @@ import BlueDartProfile from '../../model/BlueDartProfile.js';
 import BlueDartAPI from './bluedart-api.js';
 import CloudinaryUploader from './cloudinary-uploader.js';
 
+
 function formatBlueDartAddress(fullAddress, city) {
   const cleanAddr = (fullAddress || "").replace(/\s+/g, " ").trim();
-  const limit = 30; // BlueDart char limit per line
+  
+  // BlueDart Limit is usually 30 chars per line
+  const limit = 30;
   
   let addr1 = cleanAddr.substring(0, limit);
   let addr2 = cleanAddr.substring(limit, limit * 2);
@@ -16,56 +19,7 @@ function formatBlueDartAddress(fullAddress, city) {
   return { addr1, addr2, addr3 };
 }
 
-// ✅ UPDATED: Calculate Dimensions strictly from Profile Defaults (No Hardcoding)
-export function calculateOrderDimensions(order, profile) {
-  // 1. Extract Defaults from Profile (Database)
-  // If profile is missing, these fallbacks prevent crash, but DB values take priority.
-  const dbWeight = Number(profile?.defaults?.weight) || 0.5;
-  const dbLength = Number(profile?.defaults?.length) || 20;
-  const dbBreadth = Number(profile?.defaults?.breadth) || 15;
-  const dbHeight = Number(profile?.defaults?.height) || 3;
-
-  // 2. Calculate Total Weight based on REAL Book weights (if available) or Profile Default
-  let totalWeight = 0;
-  let totalQty = 0;
-
-  if (order.items && order.items.length > 0) {
-    totalWeight = order.items.reduce((sum, item) => {
-      const qty = Number(item.qty) || 1;
-      
-      // Check if specific book has weight, otherwise use profile default
-      const itemWeight = Number(item.bookId?.weight) > 0 
-        ? Number(item.bookId.weight) 
-        : dbWeight;
-
-      totalQty += qty;
-      return sum + (itemWeight * qty);
-    }, 0);
-  } else {
-    // Fallback if no items found
-    totalWeight = dbWeight; 
-    totalQty = 1;
-  }
-
-  // 3. Calculate Final Specs
-  // Height grows with stack size: (Qty * DB Height) + 2cm Packaging Buffer
-  const PACKING_BUFFER_CM = 2;
-  const calculatedHeight = Math.ceil((totalQty * dbHeight) + PACKING_BUFFER_CM);
-
-  console.log(`📏 [Auto-Calc] Order ${order._id} (Qty: ${totalQty})`);
-  console.log(`   - Profile Used: ${profile?.label || 'Unknown'}`);
-  console.log(`   - Base Weight: ${dbWeight}kg | Base Height: ${dbHeight}cm`);
-  console.log(`   - Final Calc: ${totalWeight.toFixed(2)}kg | ${dbLength}x${dbBreadth}x${calculatedHeight}cm`);
-
-  return {
-    weight: Math.max(0.5, Number(totalWeight.toFixed(2))), // BlueDart min 0.5kg
-    length: dbLength,
-    breadth: dbBreadth,
-    height: calculatedHeight
-  };
-}
-
-// ✅ Helper: Calculate COD amount
+// ✅ Helper 1: Calculate COD amount based on Payment Schema
 export function calculateCODAmount(order) {
   const totalAmount = order.amount || 0;
   const paidAmount = order.payment?.paidAmount || 0;
@@ -83,7 +37,47 @@ export function calculateCODAmount(order) {
   return 0;
 }
 
-// ✅ Helper: Get Profile
+// ✅ Helper 2: Calculate Dimensions strictly from Profile Defaults (No Hardcoding)
+export function calculateOrderDimensions(order, profile) {
+  // 1. Extract Defaults from Profile (Database)
+  const dbWeight = Number(profile?.defaults?.weight) || 0.5;
+  const dbLength = Number(profile?.defaults?.length) || 20;
+  const dbBreadth = Number(profile?.defaults?.breadth) || 15;
+  const dbHeight = Number(profile?.defaults?.height) || 3;
+
+  // 2. Calculate Total Items
+  const totalQty = order.items?.reduce((sum, item) => sum + (Number(item.qty) || 1), 0) || 1;
+
+  // 3. Calculate Final Specs
+  // Weight: (Qty * DB Weight)
+  let totalWeight = 0;
+  if (order.items && order.items.length > 0) {
+    totalWeight = order.items.reduce((sum, item) => {
+      const qty = Number(item.qty) || 1;
+      const itemWeight = Number(item.bookId?.weight) > 0 ? Number(item.bookId.weight) : dbWeight;
+      return sum + (itemWeight * qty);
+    }, 0);
+  } else {
+    totalWeight = dbWeight; 
+  }
+  const calculatedWeight = Number(totalWeight.toFixed(2));
+
+  // Height: (Qty * DB Height) + 2cm Packaging Buffer
+  const PACKING_BUFFER_CM = 2;
+  const calculatedHeight = Math.ceil((totalQty * dbHeight) + PACKING_BUFFER_CM);
+
+  console.log(`📏 [Auto-Calc] Order ${order._id} (Qty: ${totalQty})`);
+  console.log(`   - Final Calc: ${calculatedWeight}kg | ${dbLength}x${dbBreadth}x${calculatedHeight}cm`);
+
+  return {
+    weight: Math.max(0.5, calculatedWeight), // BlueDart min 0.5kg
+    length: dbLength,
+    breadth: dbBreadth,
+    height: calculatedHeight
+  };
+}
+
+// ✅ Helper 3: Get Profile
 export async function getProfileOrDefaults(profileId) {
   if (profileId) {
     const profile = await BlueDartProfile.findById(profileId).lean();
@@ -109,7 +103,10 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
 
     const profile = await getProfileOrDefaults(profileId);
     const codAmount = calculateCODAmount(order);
-    const productCode = codAmount > 0 ? 'D' : 'A';
+    
+    // ✅ FIX APPLIED HERE: Always use 'A' (Air/Apex)
+    // The API will automatically set SubProductCode to 'C' if codAmount > 0
+    const productCode = 'A';
 
     // Child Account Logic
     const loginID = (profile.clientName || '').trim();
@@ -178,7 +175,7 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
       throw new Error(result.error || 'BlueDart API failed to create waybill');
     }
 
-    // 2. UPLOAD LABEL TO CLOUDINARY (STANDARD A4 - NO CROP)
+    // 2. UPLOAD LABEL TO CLOUDINARY
     let labelUrl = null;
     let labelStatus = 'failed';
 

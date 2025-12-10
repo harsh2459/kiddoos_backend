@@ -18,14 +18,6 @@ export const createRazorpayOrder = async (req, res) => {
   try {
 
     const { amountInRupees, orderId, paymentType } = req.body;
-
-    // Debug logs
-    console.log("===================");
-    console.log("📦 Payment Request:");
-    console.log("amountInRupees:", amountInRupees);
-    console.log("paymentType:", paymentType);
-    console.log("===================");
-
     if (!amountInRupees || !orderId || !paymentType) {
       return res.status(400).json({ ok: false, error: "Missing required fields" });
     }

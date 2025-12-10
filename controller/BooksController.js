@@ -548,14 +548,15 @@ export const getBook = async (req, res) => {
 export const createBook = async (req, res, next) => {
   try {
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
-    // Handle coverUrl array
+
+    // Handle coverUrl array (Existing Logic)
     if (typeof body.assets?.coverUrl === "string") {
       body.assets.coverUrl = [body.assets.coverUrl];
     } else if (!Array.isArray(body.assets?.coverUrl)) {
       body.assets = { ...(body.assets || {}), coverUrl: [] };
     }
 
-    // Handle whyChooseThis array
+    // Handle whyChooseThis array (Existing Logic)
     if (body.whyChooseThis) {
       if (typeof body.whyChooseThis === "string") {
         body.whyChooseThis = body.whyChooseThis
@@ -567,10 +568,9 @@ export const createBook = async (req, res, next) => {
       }
     }
 
-    // ✅ CORRECT: Handle suggestions as string array (group names)
+    // Handle suggestions array (Existing Logic)
     if (body.suggestions) {
       if (typeof body.suggestions === "string") {
-        // Split by comma or newline
         body.suggestions = body.suggestions
           .split(/[,\n]/)
           .map(s => s.trim())
@@ -578,18 +578,37 @@ export const createBook = async (req, res, next) => {
       } else if (!Array.isArray(body.suggestions)) {
         body.suggestions = [];
       }
-      // Remove duplicates
       body.suggestions = [...new Set(body.suggestions)];
     }
 
+    // Handle Language Capitalization (Existing Logic)
     if (body.language && typeof body.language === "string") {
       const trimmed = body.language.trim();
       if (trimmed.length > 0) {
-        // Capitalize first letter for consistency (optional)
         body.language = trimmed[0].toUpperCase() + trimmed.slice(1);
       }
     }
 
+    // ✅ NEW: Handle Layout Config & Template Type
+    // Ensure nested arrays are valid if layoutConfig exists
+    if (body.layoutConfig) {
+      if (typeof body.layoutConfig === 'string') {
+        try {
+          body.layoutConfig = JSON.parse(body.layoutConfig);
+        } catch (e) {
+          console.error("Error parsing layoutConfig string:", e);
+          body.layoutConfig = {};
+        }
+      }
+      // Safety checks for nested arrays
+      ['curriculum', 'specs', 'testimonials', 'trustBadges'].forEach(key => {
+        if (body.layoutConfig[key] && !Array.isArray(body.layoutConfig[key])) {
+          body.layoutConfig[key] = [];
+        }
+      });
+    }
+
+    // Generate unique slug
     const slug = await uniqueSlugFrom(body.title || body.slug);
     const doc = await Book.create({ ...body, slug });
 
@@ -604,24 +623,20 @@ export const createBook = async (req, res, next) => {
   }
 };
 
-
 export const updateBook = async (req, res, next) => {
   try {
     const { id } = req.params;
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
 
-    // --- FIX START: Allow language updates ---
-    // Previously, this code deleted body.language. We REMOVED that line.
-    // Your Book.js schema already disables language_override, so this is safe.
+    // 1. Handle Language Capitalization
     if (body.language && typeof body.language === "string") {
-         const trimmed = body.language.trim();
-         if (trimmed.length > 0) {
-             body.language = trimmed[0].toUpperCase() + trimmed.slice(1);
-         }
+      const trimmed = body.language.trim();
+      if (trimmed.length > 0) {
+        body.language = trimmed[0].toUpperCase() + trimmed.slice(1);
+      }
     }
-    // --- FIX END ---
 
-    // Handle coverUrl
+    // 2. Handle coverUrl (Ensure it's always an array)
     if (body.assets && Object.prototype.hasOwnProperty.call(body.assets, "coverUrl")) {
       if (typeof body.assets.coverUrl === "string") {
         body.assets.coverUrl = [body.assets.coverUrl];
@@ -632,7 +647,7 @@ export const updateBook = async (req, res, next) => {
       delete body.assets;
     }
 
-    // Handle whyChooseThis
+    // 3. Handle whyChooseThis (Convert CSV/lines to Array)
     if (body.whyChooseThis !== undefined) {
       if (typeof body.whyChooseThis === "string") {
         body.whyChooseThis = body.whyChooseThis
@@ -644,7 +659,7 @@ export const updateBook = async (req, res, next) => {
       }
     }
 
-    // Handle suggestions
+    // 4. Handle suggestions (Convert CSV to Array)
     if (body.suggestions !== undefined) {
       if (typeof body.suggestions === "string") {
         body.suggestions = body.suggestions
@@ -657,7 +672,30 @@ export const updateBook = async (req, res, next) => {
       body.suggestions = [...new Set(body.suggestions)];
     }
 
-    // Handle slug uniqueness
+    // 5. ✅ NEW: Handle Layout Config & Template Type (The CMS Logic)
+    if (body.layoutConfig) {
+      // If data comes from FormData (file upload), it might be a JSON string
+      if (typeof body.layoutConfig === 'string') {
+        try {
+          body.layoutConfig = JSON.parse(body.layoutConfig);
+        } catch (e) {
+          console.error("Error parsing layoutConfig string:", e);
+          // Don't overwrite with empty if parse fails, just ignore
+          delete body.layoutConfig; 
+        }
+      }
+      
+      // Safety check: Validate nested arrays if they exist
+      if (body.layoutConfig) {
+        ['curriculum', 'specs', 'testimonials', 'trustBadges'].forEach(key => {
+          if (body.layoutConfig[key] && !Array.isArray(body.layoutConfig[key])) {
+            body.layoutConfig[key] = [];
+          }
+        });
+      }
+    }
+
+    // 6. Handle slug uniqueness
     if (typeof body.slug === "string" && body.slug.trim()) {
       const desired = toSlug(body.slug);
       const exists = await Book.findOne({ slug: desired, _id: { $ne: id } }).select("_id");
@@ -667,7 +705,13 @@ export const updateBook = async (req, res, next) => {
       delete body.slug;
     }
 
+    // 7. Perform the Update
     const doc = await Book.findByIdAndUpdate(id, body, { new: true, runValidators: true });
+    
+    if (!doc) {
+      return res.status(404).json({ ok: false, error: "Book not found" });
+    }
+
     res.json({ ok: true, book: doc });
   } catch (e) {
     if (e?.code === 11000) return res.status(409).json({ ok: false, error: "Slug already taken." });

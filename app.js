@@ -35,6 +35,7 @@ const allowListExact = new Set([
   "http://localhost:5173",
   "https://kiddosintellect.com",
   "http://192.168.1.39:3000",
+  "http://192.168.1.36:3000",
 ]);
 
 const vercelPreviewRegex = /^https:\/\/kidoos-frontend(-git-[a-z0-9-]+)?\.vercel\.app$/;

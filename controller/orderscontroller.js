@@ -270,7 +270,7 @@ export const listOrders = async (req, res, next) => {
     // Get orders with populated fields
     const orders = await Order.find(where)
       .populate("userId", "name email phone")
-      .populate("items.bookId", "title assets")
+      .populate("items.bookId", "title assets inventory")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -304,7 +304,8 @@ export async function getOrder(req, res, next) {
     }
 
     const order = await Order.findById(id)
-      .populate('userId', 'name email phone');
+      .populate('userId', 'name email phone')
+      .populate("items.bookId", "title assets inventory") // ✅ Added inventory
 
     if (!order) {
       return res.status(404).json({
