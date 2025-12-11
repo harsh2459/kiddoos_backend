@@ -5,7 +5,7 @@ import { PUBLIC_BASES } from "../app.js";
 import XLSX from "xlsx";
 import fs from "fs";
 import path from "path";
-
+import Category from "../model/Category.js";
 const toSlug = (s) => slugify(s || "book", { lower: true, strict: true, trim: true });
 // Replace the importBooks function in BooksController.js with this COMPLETE VERSION:
 
@@ -466,65 +466,123 @@ async function uniqueSlugFrom(title) {
 
 export const listBooks = async (req, res, next) => {
   try {
-    console.log("📥 Request query params:", req.query);
-
+    // 1. Destructure all possible query parameters
     const {
       q = "",
       limit = 50,
       page = 1,
       sort = "new",
-      visibility = "all"
+      visibility = "all",
+      category,    // Comma-separated slugs: "kids,fiction"
+      minPrice,
+      maxPrice
     } = req.query;
 
     const isAdmin = req.user && ["admin", "editor"].includes(req.user.role);
+    
+    // Start with an empty list of conditions
+    // We use $and to ensure ALL conditions (Search + Category + Price) must be met
+    const andConditions = [];
 
-    console.log("👤 User role:", req.user?.role);
-    console.log("🔍 Requested visibility:", visibility);
-    console.log("👮 Is admin:", isAdmin);
-    console.log("📄 Page:", page, "Limit:", limit);
-
-    const where = {};
-
-    // ✅ Updated search filter to include SKU and ASIN
-    if (q) {
-      where.$or = [
-        { title: { $regex: q, $options: "i" } },
-        { authors: { $regex: q, $options: "i" } },
-        { tags: { $regex: q, $options: "i" } },
-        { "inventory.sku": { $regex: q, $options: "i" } }, // ✅ Search by SKU
-        { "inventory.asin": { $regex: q, $options: "i" } }, // ✅ Search by ASIN
-      ];
+    // --- A. SEARCH FILTER ---
+    if (q && q.trim()) {
+      const regex = new RegExp(q, "i");
+      andConditions.push({
+        $or: [
+          { title: regex },
+          { authors: regex },
+          { tags: regex },
+          { "inventory.sku": regex },
+          { "inventory.asin": regex },
+        ]
+      });
     }
 
-    // Visibility filter logic
-    if (!isAdmin) {
-      where.visibility = "public";
-      console.log("🚫 Non-admin: forcing visibility=public");
-    } else {
-      if (visibility === "public") {
-        where.visibility = "public";
-        console.log("✅ Admin requesting public books only");
-      } else if (visibility === "draft") {
-        where.visibility = "draft";
-        console.log("✅ Admin requesting draft books only");
-      } else {
-        console.log("✅ Admin requesting all books (no filter)");
+    // --- B. CATEGORY FILTER ---
+    if (category) {
+      const slugs = category.split(",").map(s => s.trim()).filter(Boolean);
+      
+      if (slugs.length > 0) {
+        // 1. Find the Category Documents to get their IDs and Names
+        // We need this because books might be linked by ID (categoryRefs) OR by Name (categories strings)
+        let catIds = [];
+        let catNames = [];
+        
+        try {
+          const cats = await Category.find({ slug: { $in: slugs } }).select("_id name slug");
+          catIds = cats.map(c => c._id);
+          catNames = cats.map(c => c.name); // e.g. "Kids"
+        } catch (err) {
+          console.error("⚠️ Error finding categories in listBooks:", err);
+          // Continue even if category lookup fails, falling back to slug matching
+        }
+
+        // 2. Build the Category Query
+        // Match if: 
+        // - Book has the Category ID in `categoryRefs`
+        // - OR Book has the Slug in `categories`
+        // - OR Book has the Name in `categories` (case-insensitive)
+        
+        const searchTerms = [...slugs, ...catNames];
+        const regexTerms = searchTerms.map(t => new RegExp(`^${t}$`, 'i')); // Exact match, case-insensitive
+
+        andConditions.push({
+          $or: [
+            { categoryRefs: { $in: catIds } },
+            { categories: { $in: regexTerms } } 
+          ]
+        });
       }
     }
 
-    console.log("🔎 Final MongoDB query:", JSON.stringify(where));
+    // --- C. PRICE FILTER ---
+    if (minPrice || maxPrice) {
+      const priceQuery = {};
+      if (minPrice) priceQuery.$gte = Number(minPrice);
+      if (maxPrice) priceQuery.$lte = Number(maxPrice);
+      
+      // Only add if we actually have a number
+      if (Object.keys(priceQuery).length > 0) {
+        andConditions.push({ price: priceQuery });
+      }
+    }
+
+    // --- D. VISIBILITY FILTER ---
+    if (!isAdmin) {
+      // Public users ONLY see public books
+      andConditions.push({ visibility: "public" });
+    } else {
+      // Admins: Check request param
+      if (visibility === "public") {
+        andConditions.push({ visibility: "public" });
+      } else if (visibility === "draft") {
+        andConditions.push({ visibility: "draft" });
+      }
+      // If visibility is 'all', we don't add any visibility constraint
+    }
+
+    // --- EXECUTE QUERY ---
+    // Combine all conditions into one MongoDB query object
+    const finalQuery = andConditions.length > 0 ? { $and: andConditions } : {};
+
+    console.log("🔎 Final listBooks Query:", JSON.stringify(finalQuery, null, 2));
 
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 50;
     const skip = (pageNum - 1) * limitNum;
 
-    const total = await Book.countDocuments(where);
+    // Sort Logic
+    let sortQuery = { createdAt: -1 }; // Default: Newest
+    if (sort === "priceAsc") sortQuery = { price: 1 };
+    else if (sort === "priceDesc") sortQuery = { price: -1 };
+    else if (sort === "a-z") sortQuery = { title: 1 };
 
-    const sortBy = sort === "new" ? { createdAt: -1 } : { title: 1 };
-    const items = await Book.find(where)
-      .sort(sortBy)
+    const total = await Book.countDocuments(finalQuery);
+    const items = await Book.find(finalQuery)
+      .sort(sortQuery)
       .skip(skip)
-      .limit(limitNum);
+      .limit(limitNum)
+      .lean(); // .lean() makes it faster for read-only
 
     res.json({
       ok: true,
@@ -534,11 +592,14 @@ export const listBooks = async (req, res, next) => {
       limit: limitNum,
       totalPages: Math.ceil(total / limitNum)
     });
+
   } catch (e) {
     console.error("❌ listBooks error:", e);
-    next(e);
+    // Don't just next(e), send a clean error so frontend doesn't crash blindly
+    res.status(500).json({ ok: false, error: "Failed to load library data." });
   }
 };
+
 export const getBook = async (req, res) => {
   const book = await Book.findOne({ slug: req.params.slug, visibility: "public" });
   if (!book) return res.status(404).json({ ok: false, error: "Not found" });
