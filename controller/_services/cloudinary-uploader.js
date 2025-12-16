@@ -10,7 +10,7 @@ cloudinary.config({
 });
 
 /**
- * Uploads a file buffer (PDF) directly to Cloudinary
+ * Uploads a file buffer (PDF) directly to Cloudinary     
  * @param {Buffer} buffer - The raw PDF data
  * @param {string} filename - The desired filename (e.g., awb number)
  * @param {string} folder - Folder in Cloudinary (default: 'shipping-labels')
@@ -19,7 +19,7 @@ export const uploadBuffer = (buffer, filename, folder = 'shipping-labels') => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
-        resource_type: 'raw', // 'raw' is required for non-image files like PDFs
+        resource_type: 'raw', 
         folder: folder,
         public_id: filename,
         format: 'pdf',

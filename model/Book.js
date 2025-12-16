@@ -18,10 +18,10 @@ const BookSchema = new mongoose.Schema({
   discountPct: { type: Number, default: 0 },
   taxRate: { type: Number, default: 0 },
   currency: { type: String, default: "INR" },
-  
+
   inventory: {
     sku: { type: String, index: true },
-    asin: { type: String, index: true },
+    asin: { type: String, index: true, default: "490110" },
     stock: { type: Number, default: 0 },
     lowStockAlert: { type: Number, default: 5 }
   },
@@ -48,17 +48,17 @@ const BookSchema = new mongoose.Schema({
   visibility: { type: String, enum: ["public", "draft"], default: "public" },
 
   // --- ✅ NEW FIELDS FOR MASTER TEMPLATE ---
-  
+
   // 1. Theme Selector
-  templateType: { 
-    type: String, 
-    enum: ["spiritual", "activity", "standard"], 
-    default: "standard" 
+  templateType: {
+    type: String,
+    enum: ["spiritual", "activity", "standard"],
+    default: "standard"
   },
 
   // 2. Dynamic Page Configuration
   layoutConfig: {
-    
+
     // The "Our Story" / Mission Section
     story: {
       heading: { type: String, default: "Why We Created This Book?" },
