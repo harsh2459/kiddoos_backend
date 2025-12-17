@@ -24,6 +24,9 @@ export const getPublicSettings = async (req, res) => {
   const site = await getKey("site", { title: "Catalogue", logoUrl: "", faviconUrl: "" });
   const theme = await getKey("theme", {});
   const homepage = await getKey("homepage", { blocks: [] });
+  // ✅ ADDED: Fetch Catalog Settings
+  const catalog = await getKey("catalog", { slider: [] });
+
   const payments = await getKey("payments", { providers: [] });
   const popup = await getKey("popup", { enabled: false, configs: [] });
   const visibility = await getKey("visibility", {
@@ -51,16 +54,38 @@ export const getPublicSettings = async (req, res) => {
     site: siteOut,
     theme,
     homepage,
+    catalog, // ✅ ADDED: Send to frontend
     payments: safePayments,
     visibility,
     popup: { enabled: popup.enabled }
   });
 };
 
+// 2. ADD THIS NEW FUNCTION (Anywhere in the file)
+export const updateCatalog = async (req, res) => {
+  const { slider } = req.body;
+  
+  // Sanitize images to ensure relative paths
+  const cleanedSlider = (slider || []).map(s => ({
+    ...s,
+    image: s.image ? sanitizePathsToRelative({ img: s.image }, PUBLIC_BASES).img : ""
+  }));
+
+  const doc = await Setting.findOneAndUpdate(
+    { key: "catalog" },
+    { value: { slider: cleanedSlider } },
+    { upsert: true, new: true }
+  );
+  res.json({ ok: true, catalog: doc.value });
+};
+
 export const getAdminSettings = async (req, res) => {
   const site = await getKey("site", {});
   const theme = await getKey("theme", {});
   const homepage = await getKey("homepage", { blocks: [] });
+  // ✅ ADDED: Fetch Catalog Settings for Admin
+  const catalog = await getKey("catalog", { slider: [] });
+
   const payments = await getKey("payments", { providers: [] });
   const visibility = await getKey("visibility", {
     publicNav: ["catalog", "theme", "admin", "cart"],
@@ -75,7 +100,8 @@ export const getAdminSettings = async (req, res) => {
     faviconUrl: toAbsoluteIfNeeded(site.faviconUrl, base),
   };
 
-  res.json({ ok: true, site: siteOut, theme, homepage, payments, visibility, popup });
+  // ✅ ADDED: Include catalog in response
+  res.json({ ok: true, site: siteOut, theme, homepage, catalog, payments, visibility, popup });
 };
 
 export const updateSiteSettings = async (req, res) => {
@@ -135,36 +161,37 @@ export const upsertPayments = async (req, res) => {
   res.json({ ok: true, payments: doc.value });
 };
 
+
 export const getPopupSettings = async (req, res) => {
   try {
     const popup = await getKey("popup", {
       enabled: false,
       configs: []
     });
-    
+
     const base = getBaseFromReq(req);
-    
+
     // Populate product details and convert image URLs
     const populatedConfigs = await Promise.all(
       (popup.configs || []).map(async (config) => {
         const configOut = { ...config };
-        
+
         // Convert image URL to absolute if needed
         if (config.imageUrl) {
           configOut.imageUrl = toAbsoluteIfNeeded(config.imageUrl, base);
         }
-        
+
         // Populate product
         if (config.productId) {
           try {
             const product = await Book.findById(config.productId)
               .select('title slug authors price mrp discountPct assets.coverUrl')
               .lean();
-            
+
             if (product) {
               // Convert product images to absolute
               if (product.assets?.coverUrl) {
-                product.assets.coverUrl = product.assets.coverUrl.map(url => 
+                product.assets.coverUrl = product.assets.coverUrl.map(url =>
                   toAbsoluteIfNeeded(url, base)
                 );
               }
@@ -174,14 +201,14 @@ export const getPopupSettings = async (req, res) => {
             console.error('Book not found:', config.productId);
           }
         }
-        
+
         return configOut;
       })
     );
-    
-    return res.json({ 
-      ok: true, 
-      popup: { ...popup, configs: populatedConfigs } 
+
+    return res.json({
+      ok: true,
+      popup: { ...popup, configs: populatedConfigs }
     });
   } catch (error) {
     console.error('getPopupSettings error:', error);
@@ -193,33 +220,33 @@ export const getPopupSettings = async (req, res) => {
 export const getActivePopup = async (req, res) => {
   try {
     const { page = 'all', userType = 'new' } = req.query;
-    
+
     console.log('🔍 Backend: getActivePopup called with:', { page, userType });
-    
+
     const popup = await getKey("popup", { enabled: false, configs: [] });
-    
-    console.log('📊 Backend: Popup settings from DB:', { 
-      enabled: popup.enabled, 
-      configsCount: popup.configs?.length || 0 
+
+    console.log('📊 Backend: Popup settings from DB:', {
+      enabled: popup.enabled,
+      configsCount: popup.configs?.length || 0
     });
-    
+
     if (!popup.enabled) {
       console.log('🚫 Backend: Popups are disabled globally');
       return res.json({ ok: true, popup: null });
     }
-    
+
     const now = new Date();
     console.log('⏰ Backend: Current time:', now);
-    
+
     // Find matching active popup
     const matchedConfig = (popup.configs || []).find(config => {
       const isActive = config.isActive;
       const startValid = !config.startDate || new Date(config.startDate) <= now;
       const endValid = !config.endDate || new Date(config.endDate) >= now;
       const pageValid = config.targetPages.includes('all') || config.targetPages.includes(page);
-      const userValid = (userType === 'new' && config.showToNewVisitors) || 
-                       (userType === 'returning' && config.showToReturningVisitors);
-      
+      const userValid = (userType === 'new' && config.showToNewVisitors) ||
+        (userType === 'returning' && config.showToReturningVisitors);
+
       console.log(`🔍 Backend: Checking config "${config.title}":`, {
         isActive,
         startValid,
@@ -230,42 +257,42 @@ export const getActivePopup = async (req, res) => {
         showToNew: config.showToNewVisitors,
         showToReturning: config.showToReturningVisitors
       });
-      
+
       return isActive && startValid && endValid && pageValid && userValid;
     });
-    
+
     if (!matchedConfig) {
       console.log('🚫 Backend: No matching active popup found');
       return res.json({ ok: true, popup: null });
     }
-    
+
     console.log('✅ Backend: Found matching popup:', matchedConfig.title);
-    
+
     const base = getBaseFromReq(req);
     const configOut = { ...matchedConfig };
-    
+
     // Convert image URL to absolute
     if (matchedConfig.imageUrl) {
       configOut.imageUrl = toAbsoluteIfNeeded(matchedConfig.imageUrl, base);
     }
-    
+
     // For image design, we don't need product details
     if (matchedConfig.designType === 'image') {
       console.log('🖼️ Backend: Returning image-based popup');
       return res.json({ ok: true, popup: configOut });
     }
-    
+
     // For custom design, populate product details
     if (matchedConfig.productId) {
       try {
         const product = await Book.findById(matchedConfig.productId)
           .select('title slug price mrp discountPct assets.coverUrl')
           .lean();
-        
+
         if (product) {
           // Convert product images to absolute
           if (product.assets?.coverUrl) {
-            product.assets.coverUrl = product.assets.coverUrl.map(url => 
+            product.assets.coverUrl = product.assets.coverUrl.map(url =>
               toAbsoluteIfNeeded(url, base)
             );
           }
@@ -276,15 +303,15 @@ export const getActivePopup = async (req, res) => {
         console.error('❌ Backend: Book not found:', matchedConfig.productId);
       }
     }
-    
+
     if (!configOut.product && matchedConfig.designType === 'custom') {
       console.log('🚫 Backend: Custom design popup missing product');
       return res.json({ ok: true, popup: null });
     }
-    
+
     console.log('🎉 Backend: Returning popup data');
     res.json({ ok: true, popup: configOut });
-    
+
   } catch (error) {
     console.error('❌ Backend: getActivePopup error:', error);
     res.status(500).json({ ok: false, error: error.message });
@@ -295,27 +322,27 @@ export const getActivePopup = async (req, res) => {
 export const updatePopupSettings = async (req, res) => {
   try {
     const { enabled, configs } = req.body;
-    
+
     // Sanitize image URLs in configs
     const sanitizedConfigs = configs.map(config => {
       const sanitized = { ...config };
-      
+
       if (config.imageUrl && !isAbsoluteUrl(config.imageUrl)) {
         sanitized.imageUrl = sanitizePathsToRelative(
-          { imageUrl: config.imageUrl }, 
+          { imageUrl: config.imageUrl },
           PUBLIC_BASES
         ).imageUrl;
       }
-      
+
       // Remove temporary product data
       delete sanitized.product;
-      
+
       return sanitized;
     });
-    
+
     const doc = await Setting.findOneAndUpdate(
       { key: "popup" },
-      { 
+      {
         value: {
           enabled: !!enabled,
           configs: sanitizedConfigs
@@ -323,7 +350,7 @@ export const updatePopupSettings = async (req, res) => {
       },
       { upsert: true, new: true }
     );
-    
+
     res.json({ ok: true, popup: doc.value });
   } catch (error) {
     console.error('updatePopupSettings error:', error);
@@ -335,14 +362,14 @@ export const updatePopupSettings = async (req, res) => {
 export const trackPopup = async (req, res) => {
   try {
     const { configId, action } = req.body;
-    
+
     const popup = await getKey("popup", { enabled: false, configs: [] });
     const configIndex = popup.configs.findIndex(c => c._id === configId);
-    
+
     if (configIndex === -1) {
       return res.status(404).json({ ok: false, error: "Config not found" });
     }
-    
+
     // Update analytics
     const fieldMap = {
       impression: 'impressions',
@@ -350,20 +377,20 @@ export const trackPopup = async (req, res) => {
       conversion: 'conversions',
       dismiss: 'dismissals'
     };
-    
+
     const field = fieldMap[action];
     if (!field) {
       return res.status(400).json({ ok: false, error: "Invalid action" });
     }
-    
+
     popup.configs[configIndex][field] = (popup.configs[configIndex][field] || 0) + 1;
-    
+
     await Setting.findOneAndUpdate(
       { key: "popup" },
       { value: popup },
       { upsert: true }
     );
-    
+
     res.json({ ok: true });
   } catch (error) {
     console.error('trackPopup error:', error);
