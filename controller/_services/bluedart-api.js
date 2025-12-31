@@ -66,7 +66,7 @@ class BlueDartAPI {
   // ✅ 1. CREATE WAYBILL (With Detailed Logs)
   async createWaybill(data) {
     try {
-            // 🔍 DEBUG LOG 1: Check Input Amounts
+      // 🔍 DEBUG LOG 1: Check Input Amounts
       const codAmount = Number(data.codAmount) || 0;
       const subProductCode = codAmount > 0 ? 'C' : 'P';
 
@@ -149,7 +149,7 @@ class BlueDartAPI {
           Customercode: data.creds.loginID,
           LicenceKey: data.creds.licenseKey,
           LoginID: data.creds.loginID,
-          Version: '1.3',
+          Version: '1.8',
           IsAdmin: ''
         }
       };
@@ -158,7 +158,7 @@ class BlueDartAPI {
 
       const result = await this.apiCall('POST', BD_CONFIG.endpoints.waybill, payload);
 
-      
+
 
       const output = result.GenerateWayBillResult || result;
 
@@ -394,7 +394,7 @@ class BlueDartAPI {
           Customercode: 'SUR96891',
           LicenceKey: process.env.BLUEDART_LICENSE_KEY || 'kogqnihoth6pi4hfkgihrsujpttff7wr',
           LoginID: 'SUR96891',
-          Version: '1.3',
+          Version: '1.8',
           IsAdmin: ''
         }
       };

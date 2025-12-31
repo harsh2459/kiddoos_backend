@@ -3,7 +3,8 @@
 import Order from '../../model/Order.js';
 import BlueDartProfile from '../../model/BlueDartProfile.js';
 import BlueDartAPI from './bluedart-api.js';
-import CloudinaryUploader from './cloudinary-uploader.js';
+import * as DriveUploader from './drive-uploader.js';     // ✅ Import Drive
+import * as CloudinaryUploader from './cloudinary-uploader.js';
 
 
 function formatBlueDartAddress(fullAddress, city) {
@@ -40,7 +41,7 @@ export function calculateCODAmount(order) {
 // ✅ Helper 2: Calculate Dimensions strictly from Profile Defaults (No Hardcoding)
 export function calculateOrderDimensions(order, profile) {
   // 1. Extract Defaults from Profile (Database)
-  const dbWeight = Number(profile?.defaults?.weight) || 0.5;
+  const dbWeight = Number(profile?.defaults?.weight) || 0.3;
   const dbLength = Number(profile?.defaults?.length) || 20;
   const dbBreadth = Number(profile?.defaults?.breadth) || 15;
   const dbHeight = Number(profile?.defaults?.height) || 3;
@@ -180,29 +181,46 @@ export async function createShipmentForOrder(orderId, profileId = null, options 
     let labelStatus = 'failed';
 
     if (result.awbPrintContent) {
-      try {
-        console.log(`☁️ Uploading label for AWB ${result.awbNumber}...`);
+      // Step A: Save Locally & Crop
+      const savedLabel = await BlueDartLabel.saveLabelFromContent(result.awbNumber, result.awbPrintContent);
+      
+      if (savedLabel.success) {
         
-        let pdfBuffer;
-        if (Buffer.isBuffer(result.awbPrintContent)) {
-          pdfBuffer = result.awbPrintContent;
-        } else if (Array.isArray(result.awbPrintContent)) {
-          pdfBuffer = Buffer.from(result.awbPrintContent);
-        } else {
-          pdfBuffer = Buffer.from(result.awbPrintContent, 'base64');
+        // ➤ LOGIC: TRY DRIVE, FALLBACK TO CLOUDINARY
+        try {
+          console.log('☁️  Attempting Google Drive Upload...');
+          
+          // REPLACE THIS ID WITH YOUR ACTUAL DRIVE FOLDER ID
+          const DRIVE_FOLDER_ID = '1jhLIw6kWGjnxyiTkWj5ypn8wN1_guptx'; 
+          
+          const driveRes = await DriveUploader.uploadBuffer(
+            savedLabel.buffer, 
+            savedLabel.fileName, 
+            DRIVE_FOLDER_ID
+          );
+          
+          labelUrl = driveRes.url;
+          console.log('✅ Hosted on Google Drive');
+
+        } catch (driveError) {
+          console.warn('⚠️ Drive Upload Failed. Switching to Cloudinary...', driveError.message);
+          
+          // ➤ FALLBACK: UPLOAD TO CLOUDINARY
+          try {
+            const cloudRes = await CloudinaryUploader.uploadBuffer(
+              savedLabel.buffer, 
+              result.awbNumber
+            );
+            labelUrl = cloudRes.secure_url;
+            console.log('✅ Hosted on Cloudinary (Backup)');
+          } catch (cloudError) {
+            console.error('❌ All Uploads Failed. Label only available locally.');
+            // Fallback to local server URL if both fail
+            labelUrl = `/uploads/labels/${savedLabel.fileName}`; 
+          }
         }
-
-        const uploadResult = await CloudinaryUploader.uploadBuffer(
-          pdfBuffer,
-          `label-${result.awbNumber}`,
-          'shipping-labels'
-        );
-
-        labelUrl = uploadResult.secure_url;
+        
         labelStatus = 'generated';
-        console.log(`✅ Label uploaded: ${labelUrl}`);
-      } catch (uploadErr) {
-        console.error('❌ Cloudinary Upload Failed:', uploadErr);
       }
     }
 
