@@ -19,10 +19,10 @@ export const uploadBuffer = (buffer, filename, folder = 'shipping-labels') => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
-        resource_type: 'raw', 
+        resource_type: 'auto',  // 👈 CHANGE THIS from 'raw' to 'auto'
         folder: folder,
         public_id: filename,
-        format: 'pdf',
+        format: 'pdf',          // 👈 ADD THIS to force PDF format
         overwrite: true
       },
       (error, result) => {
@@ -31,7 +31,6 @@ export const uploadBuffer = (buffer, filename, folder = 'shipping-labels') => {
       }
     );
 
-    // Create a read stream from the buffer and pipe it to Cloudinary
     const bufferStream = new stream.PassThrough();
     bufferStream.end(buffer);
     bufferStream.pipe(uploadStream);

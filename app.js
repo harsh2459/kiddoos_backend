@@ -80,6 +80,7 @@ import { exportBooks, } from "./controller/BooksController.js";
 import { onOrderPaid } from './controller/orderscontroller.js';
 import blueDartProfileRoute from './routes/blueDartProfileRoute.js';
 import labelRoute from './routes/labelRoute.js';
+import aiRoutes from "./routes/aiRoutes.js";
 
 app.use('/api/labels', labelRoute);
 app.use('/uploads', express.static('uploads'));
@@ -95,6 +96,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/ai", aiRoutes);
 app.post('/api/orders/place', onOrderPaid);
 app.get("/api/export", exportBooks);
 
@@ -120,4 +122,3 @@ const ensureDb = (async () => {
 })();
 
 export { app, ensureDb };
-

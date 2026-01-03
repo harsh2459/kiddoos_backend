@@ -20,6 +20,40 @@ async function uniqueSlugFrom(title) {
   return `${base}-${n}`;
 }
 
+async function ensureCategoriesExist(categories) {
+  if (!Array.isArray(categories) || categories.length === 0) return;
+
+  for (const catName of categories) {
+    if (!catName || typeof catName !== 'string') continue;
+
+    const trimmedName = catName.trim();
+    const slug = slugify(trimmedName, { lower: true, strict: true, trim: true });
+
+    if (!slug) continue;
+
+    try {
+      // Upsert: Try to find by slug, if not found, create it
+      // $setOnInsert ensures we don't overwrite existing data like descriptions
+      await Category.findOneAndUpdate(
+        { slug: slug }, 
+        { 
+          $setOnInsert: { 
+            name: trimmedName, 
+            slug: slug, 
+            description: "Auto-created via Book Upload",
+            meta: { visible: true, priority: 0 }
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      // console.log(`✅ Category ensured: ${trimmedName}`);
+    } catch (err) {
+      console.error(`⚠️ Failed to auto-create category "${trimmedName}":`, err.message);
+    }
+  }
+}
+
+// ✅ 2. REPLACE YOUR EXISTING importBooks FUNCTION WITH THIS:
 export const importBooks = async (req, res) => {
   try {
     const file = req.file;
@@ -31,35 +65,35 @@ export const importBooks = async (req, res) => {
     // Read Excel/CSV from memory buffer
     const workbook = XLSX.read(file.buffer, { type: "buffer" });
 
-    // ✅ Find the data sheet - prioritize sheets with "edit" or actual data
+    // Find the data sheet - prioritize sheets with specific keywords
     let sheetName = workbook.SheetNames.find(name => {
       const lower = name.toLowerCase();
+      // Skip instruction/example sheets
       if (lower.includes('example') || lower.includes('instruction') || 
           lower.includes('definition') || lower.includes('dropdown') ||
-          lower.includes('validation') || lower.includes('icon') ||
-          lower.includes('international') || lower.includes('translation')) {
+          lower.includes('validation')) {
         return false;
       }
-      return lower.includes('edit') || lower.includes('template') || lower.includes('bazaar');
+      return lower.includes('edit') || lower.includes('template') || lower.includes('bazaar') || lower.includes('data');
     });
 
+    // Fallback: Use the sheet with the most rows
     if (!sheetName) {
       let maxRows = 0;
       for (const name of workbook.SheetNames) {
         const lower = name.toLowerCase();
         if (lower.includes('example') || lower.includes('instruction')) continue;
         const tempSheet = workbook.Sheets[name];
-        const tempData = XLSX.utils.sheet_to_json(tempSheet);
-        if (tempData.length > maxRows) {
-          maxRows = tempData.length;
+        const range = XLSX.utils.decode_range(tempSheet['!ref'] || "A1");
+        const rows = range.e.r;
+        if (rows > maxRows) {
+          maxRows = rows;
           sheetName = name;
         }
       }
     }
 
-    if (!sheetName) {
-      sheetName = workbook.SheetNames[0];
-    }
+    if (!sheetName) sheetName = workbook.SheetNames[0]; // Final fallback
 
     const sheet = workbook.Sheets[sheetName];
 
@@ -75,20 +109,19 @@ export const importBooks = async (req, res) => {
     let headerRowIndex = -1;
     let actualHeaders = [];
 
-    for (let i = 0; i < Math.min(10, rawData.length); i++) {
+    for (let i = 0; i < Math.min(20, rawData.length); i++) {
       const row = rawData[i];
       if (!row || row.length === 0) continue;
 
       const rowStr = row.join('|').toLowerCase();
-      const hasHeaders = rowStr.includes('title') || rowStr.includes('price') ||
-                        rowStr.includes('author') || rowStr.includes('stock') ||
-                        rowStr.includes('asin');
+      // Look for key columns to identify the header row
+      const hasHeaders = rowStr.includes('title') && (rowStr.includes('price') || rowStr.includes('mrp') || rowStr.includes('stock'));
 
       if (hasHeaders) {
         headerRowIndex = i;
         actualHeaders = row.map((cell) => {
           const str = String(cell || '').toLowerCase().trim().replace(/\r?\n/g, ' ');
-          const mainName = str.split('(')[0].trim();
+          const mainName = str.split('(')[0].trim(); // Remove (Instruction) text
           return mainName || '';
         });
         break;
@@ -98,8 +131,7 @@ export const importBooks = async (req, res) => {
     if (headerRowIndex === -1 || actualHeaders.length === 0) {
       return res.status(400).json({
         ok: false,
-        error: "Could not identify header row in the Excel file",
-        hint: "The file structure might be different than expected"
+        error: "Could not identify header row. Ensure columns 'Title' and 'Price' exist."
       });
     }
 
@@ -114,19 +146,15 @@ export const importBooks = async (req, res) => {
         rowData[actualHeaders[j]] = row[j];
       }
 
+      // Only add row if it has some data
       if (Object.values(rowData).some(v => v && String(v).trim())) {
         data.push(rowData);
       }
     }
 
-    console.log(`📊 Parsed data length: ${data.length}`);
-
-    if (!data || data.length === 0) {
+    if (data.length === 0) {
       return res.status(400).json({ ok: false, error: "File is empty or has no valid data rows" });
     }
-
-    console.log("📋 Sample data row 1:", data[0]);
-    if (data[1]) console.log("📋 Sample data row 2:", data[1]);
 
     // Auto-detect column names (case-insensitive, flexible matching)
     const getCol = (keywords) => {
@@ -135,245 +163,171 @@ export const importBooks = async (req, res) => {
         keywords.some(kw => {
           const colName = String(k).toLowerCase().trim();
           const keyword = String(kw).toLowerCase().trim();
-          return colName.includes(keyword) || keyword.includes(colName);
+          return colName === keyword || colName.includes(keyword);
         })
       );
       return key;
     };
 
-    // ✅ COLUMN MAPPING - EXACT MATCH WITH EXPORT TEMPLATE
-    
-    // Basic Info
-    const titleCol = getCol(["title"]);
+    // --- COLUMN MAPPING ---
+    const titleCol = getCol(["title", "book name"]);
     const subtitleCol = getCol(["subtitle"]);
     
-    // ISBN & Identifiers
     const isbn10Col = getCol(["isbn10", "isbn-10", "isbn 10"]);
     const isbn13Col = getCol(["isbn13", "isbn-13", "isbn 13"]);
-    const skuCol = getCol(["sku"]);
+    const skuCol = getCol(["sku", "identifier"]);
     const asinCol = getCol(["asin"]);
     
-    // Author & Language
-    const authCol = getCol(["authors", "author"]);
+    const authCol = getCol(["authors", "author", "writer"]);
     const languageCol = getCol(["language"]);
     
-    // Physical Details
-    const formatCol = getCol(["print type", "printtype", "format"]);
-    const pagesCol = getCol(["pages"]);
+    const formatCol = getCol(["print type", "printtype", "format", "binding"]);
+    const pagesCol = getCol(["pages", "no of pages"]);
     const editionCol = getCol(["edition"]);
     
-    // Dimensions
     const weightCol = getCol(["weight"]);
     const lengthCol = getCol(["length"]);
     const widthCol = getCol(["width"]);
     const heightCol = getCol(["height"]);
     
-    // Inventory
-    const qtyCol = getCol(["stock", "quantity"]);
+    const qtyCol = getCol(["stock", "quantity", "inventory"]);
     const lowStockCol = getCol(["low stock alert", "low stock", "lowstockalert"]);
     
-    // Categories & Tags
     const categoryCol = getCol(["categories", "category"]);
-    const tagsCol = getCol(["tags"]);
+    const tagsCol = getCol(["tags", "keywords"]);
     
-    // Content
-    const descCol = getCol(["description"]);
-    const whyChooseCol = getCol(["why choose this", "why choose"]);
-    const suggestionsCol = getCol(["suggestions"]);
+    const descCol = getCol(["description", "summary"]);
+    const whyChooseCol = getCol(["why choose this", "why choose", "highlights"]);
+    const suggestionsCol = getCol(["suggestions", "related"]);
     
-    // Visibility
-    const visibilityCol = getCol(["visibility"]);
+    const visibilityCol = getCol(["visibility", "status"]);
     
-    // Pricing
-    const mrpCol = getCol(["mrp"]);
-    const priceCol = getCol(["price"]);
-    const discountCol = getCol(["discount %", "discount"]);
-    const taxCol = getCol(["tax rate", "taxrate", "tax"]);
+    const mrpCol = getCol(["mrp", "list price"]);
+    const priceCol = getCol(["price", "sale price", "selling price"]);
+    const taxCol = getCol(["tax rate", "taxrate", "tax", "gst"]);
     const currencyCol = getCol(["currency"]);
     
-    // Assets
-    const coverUrlCol = getCol(["cover url", "coverurl", "cover"]);
-    const samplePdfCol = getCol(["sample pdf url", "sample pdf", "samplepdfurl"]);
+    const coverUrlCol = getCol(["cover url", "coverurl", "images"]);
+    const samplePdfCol = getCol(["sample pdf url", "sample pdf"]);
     
-    // Template
     const templateTypeCol = getCol(["template type", "templatetype", "template"]);
-    
-    // Validate required fields
+
+    // Validation
     if (!titleCol) {
-      return res.status(400).json({
-        ok: false,
-        error: "Could not find 'Title' column in the file",
-        availableColumns: Object.keys(data[0]),
-        hint: "Make sure your file has a column named 'Title'"
-      });
+      return res.status(400).json({ ok: false, error: "Missing 'Title' column" });
+    }
+    if (!priceCol && !mrpCol) {
+      return res.status(400).json({ ok: false, error: "Missing 'Price' or 'MRP' column" });
     }
 
-    if (!priceCol) {
-      return res.status(400).json({
-        ok: false,
-        error: "Could not find 'Price' column in the file",
-        availableColumns: Object.keys(data[0]),
-        hint: "Make sure your file has a column named 'Price'"
-      });
-    }
-
-    // Process rows
     const books = [];
-    const errors = [];
     const skipped = [];
+    const errors = [];
+    
+    // ✅ SET to collect all unique categories from this file
+    const allCategoriesSet = new Set();
 
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
-      const rowNum = i + 2;
+      const rowNum = i + headerRowIndex + 2; // Actual Excel row number
 
-      // Get title
+      // Get Title
       const title = String(row[titleCol] || "").trim();
-
-      if (!title || title.toLowerCase() === titleCol?.toLowerCase()) {
-        skipped.push(`Row ${rowNum}: Empty or header row`);
+      if (!title) {
+        skipped.push(`Row ${rowNum}: Empty title`);
         continue;
       }
 
-      // Get subtitle
+      // Basic fields
       const subtitle = subtitleCol ? String(row[subtitleCol] || "").trim() : "";
-      
-      // Get ISBN
       const isbn10 = isbn10Col ? String(row[isbn10Col] || "").trim() : "";
       const isbn13 = isbn13Col ? String(row[isbn13Col] || "").trim() : "";
-      
-      // Get identifiers
       const skuRaw = skuCol ? String(row[skuCol] || "").trim() : "";
       const asinRaw = asinCol ? String(row[asinCol] || "").trim() : "";
 
-      // Get authors
+      // Authors
       const authorRaw = authCol ? String(row[authCol] || "").trim() : "";
-      let authors = [];
-      if (authorRaw) {
-        authors = authorRaw.split(/[,;]/).map(a => a.trim()).filter(Boolean);
-      } else if (title.includes("Kiddos Intellect")) {
-        authors = ["Kiddos Intellect"];
-      } else {
-        authors = ["Unknown Author"];
-      }
+      let authors = authorRaw ? authorRaw.split(/[,;]/).map(a => a.trim()).filter(Boolean) : ["Unknown Author"];
 
-      // Get language
+      // Language
       const languageRaw = languageCol ? String(row[languageCol] || "English").trim() : "English";
       const language = languageRaw.charAt(0).toUpperCase() + languageRaw.slice(1).toLowerCase();
 
-      // Get format
+      // Format
       const format = formatCol ? String(row[formatCol] || "paperback").toLowerCase() : "paperback";
-      const validFormats = ["paperback", "hardcover", "ebook"];
-      const printType = validFormats.includes(format) ? format : "paperback";
+      const printType = ["hardcover", "ebook"].includes(format) ? format : "paperback";
 
-      // Get pages
-      const pagesRaw = pagesCol ? String(row[pagesCol] || "0") : "0";
-      const pages = parseInt(pagesRaw.replace(/[^0-9]/g, ""), 10) || 0;
-      
-      // Get edition
+      // Pages & Edition
+      const pages = parseInt(String(row[pagesCol] || "0").replace(/[^0-9]/g, ""), 10) || 0;
       const edition = editionCol ? String(row[editionCol] || "").trim() : "";
 
-      // Get dimensions
-      const weightRaw = weightCol ? String(row[weightCol] || "0") : "0";
-      const weight = parseFloat(weightRaw.replace(/[^0-9.]/g, "")) || 0;
+      // Dimensions
+      const weight = parseFloat(String(row[weightCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const length = parseFloat(String(row[lengthCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const width = parseFloat(String(row[widthCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const height = parseFloat(String(row[heightCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+
+      // Stock
+      const stock = parseInt(String(row[qtyCol] || "0").replace(/[^0-9]/g, ""), 10) || 0;
+      const lowStockAlert = parseInt(String(row[lowStockCol] || "5").replace(/[^0-9]/g, ""), 10) || 5;
+
+      // Pricing
+      const mrp = parseFloat(String(row[mrpCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const priceRaw = parseFloat(String(row[priceCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const price = priceRaw > 0 ? priceRaw : mrp; // Fallback to MRP if price missing
       
-      const lengthRaw = lengthCol ? String(row[lengthCol] || "0") : "0";
-      const length = parseFloat(lengthRaw.replace(/[^0-9.]/g, "")) || 0;
-      
-      const widthRaw = widthCol ? String(row[widthCol] || "0") : "0";
-      const width = parseFloat(widthRaw.replace(/[^0-9.]/g, "")) || 0;
-      
-      const heightRaw = heightCol ? String(row[heightCol] || "0") : "0";
-      const height = parseFloat(heightRaw.replace(/[^0-9.]/g, "")) || 0;
+      const taxRate = parseFloat(String(row[taxCol] || "0").replace(/[^0-9.]/g, "")) || 0;
+      const currency = currencyCol ? String(row[currencyCol] || "INR").trim() : "INR";
 
-      // Get stock
-      const stockRaw = String(row[qtyCol] || "0");
-      const stockStr = stockRaw.replace(/[^0-9]/g, "");
-      const stock = parseInt(stockStr, 10) || 0;
-      
-      const lowStockRaw = lowStockCol ? String(row[lowStockCol] || "5") : "5";
-      const lowStockAlert = parseInt(lowStockRaw.replace(/[^0-9]/g, ""), 10) || 5;
+      const discountPct = mrp > 0 && price < mrp ? Math.round(((mrp - price) / mrp) * 100) : 0;
 
-      // Get categories
-      const categoriesRaw = categoryCol ? String(row[categoryCol] || "").trim() : "";
-      const categories = categoriesRaw
-        ? categoriesRaw.split(/[,;]/).map(c => c.trim()).filter(Boolean)
-        : ["Books", "Educational"];
-
-      // Get tags
-      const tagsRaw = tagsCol ? String(row[tagsCol] || "").trim() : "";
-      const tags = tagsRaw
-        ? tagsRaw.split(/[,;]/).map(t => t.trim()).filter(Boolean)
-        : ["imported", "bazaar"];
-
-      // Get description
-      const description = descCol
-        ? String(row[descCol] || title).trim()
-        : title;
-      
-      // Get whyChooseThis (bullet points)
-      const whyChooseRaw = whyChooseCol ? String(row[whyChooseCol] || "").trim() : "";
-      const whyChooseThis = whyChooseRaw
-        ? whyChooseRaw.split(/[\n;]/).map(w => w.trim()).filter(Boolean)
-        : [];
-      
-      // Get suggestions
-      const suggestionsRaw = suggestionsCol ? String(row[suggestionsCol] || "").trim() : "";
-      const suggestions = suggestionsRaw
-        ? suggestionsRaw.split(/[,;]/).map(s => s.trim()).filter(Boolean)
-        : [];
-
-      // Get visibility
-      const visibilityRaw = visibilityCol ? String(row[visibilityCol] || "").toLowerCase() : "";
-      const visibility = (visibilityRaw === "public" && stock > 0) ? "public" : "draft";
-
-      // Get pricing
-      const mrpRaw = mrpCol ? String(row[mrpCol] || "0") : "0";
-      const mrpStr = mrpRaw.replace(/[^0-9.]/g, "");
-      const mrp = parseFloat(mrpStr) || 0;
-
-      const priceRaw = String(row[priceCol] || "0");
-      const priceStr = priceRaw.replace(/[^0-9.]/g, "");
-      const price = parseFloat(priceStr) || 0;
-      
-      const taxRaw = taxCol ? String(row[taxCol] || "0") : "0";
-      const taxRate = parseFloat(taxRaw.replace(/[^0-9.]/g, "")) || 0;
-      
-      const currencyRaw = currencyCol ? String(row[currencyCol] || "INR").trim() : "INR";
-      const currency = currencyRaw || "INR";
-
-      // Calculate discount (ignore if provided in sheet, we calculate it)
-      const discountPct = mrp > 0 && price < mrp
-        ? Math.round(((mrp - price) / mrp) * 100)
-        : 0;
-
-      // Get assets
-      const coverUrlRaw = coverUrlCol ? String(row[coverUrlCol] || "").trim() : "";
-      const coverUrl = coverUrlRaw 
-        ? coverUrlRaw.split(/[,;]/).map(u => u.trim()).filter(Boolean)
-        : [];
-      
-      const samplePdfUrl = samplePdfCol ? String(row[samplePdfCol] || "").trim() : "";
-
-      // Get template type
-      const templateTypeRaw = templateTypeCol ? String(row[templateTypeCol] || "standard").toLowerCase() : "standard";
-      const validTemplates = ["spiritual", "activity", "standard"];
-      const templateType = validTemplates.includes(templateTypeRaw) ? templateTypeRaw : "standard";
-
-      console.log(`🔍 Row ${rowNum}: "${title}" | Authors: ${authors.join(', ')} | ${printType} | ${pages}p | Stock: ${stock} | ₹${price} (${discountPct}% off) | ${visibility}`);
-
-      // Validation
-      if (price <= 0) {
-        errors.push(`Row ${rowNum}: "${title}" has invalid sale price: ${priceRaw}`);
+      if (price <= 0 && mrp <= 0) {
+        errors.push(`Row ${rowNum}: "${title}" has invalid price`);
         continue;
       }
 
-      // Generate unique SKU
-      const finalSku = skuRaw || `SKU_${Date.now()}_${i}`;
-      const finalAsin = asinRaw || "";
+      // Categories
+      const categoriesRaw = categoryCol ? String(row[categoryCol] || "").trim() : "";
+      const categories = categoriesRaw
+        ? categoriesRaw.split(/[,;]/).map(c => c.trim()).filter(Boolean)
+        : ["Books"];
+      
+      // ✅ Add to Set for auto-creation
+      categories.forEach(c => allCategoriesSet.add(c));
+
+      // Tags
+      const tagsRaw = tagsCol ? String(row[tagsCol] || "").trim() : "";
+      const tags = tagsRaw ? tagsRaw.split(/[,;]/).map(t => t.trim()).filter(Boolean) : [];
+
+      // Description & Content
+      const description = descCol ? String(row[descCol] || "").trim() : "";
+      const descriptionHtml = description ? `<p>${description.replace(/\n/g, "<br>")}</p>` : "";
+      
+      const whyChooseRaw = whyChooseCol ? String(row[whyChooseCol] || "").trim() : "";
+      const whyChooseThis = whyChooseRaw ? whyChooseRaw.split(/[\n;]/).map(w => w.trim()).filter(Boolean) : [];
+      
+      const suggestionsRaw = suggestionsCol ? String(row[suggestionsCol] || "").trim() : "";
+      const suggestions = suggestionsRaw ? suggestionsRaw.split(/[,;]/).map(s => s.trim()).filter(Boolean) : [];
+
+      // Visibility
+      const visibilityRaw = visibilityCol ? String(row[visibilityCol] || "").toLowerCase() : "";
+      const visibility = (visibilityRaw === "public" || (stock > 0 && visibilityRaw !== "draft")) ? "public" : "draft";
+
+      // Assets
+      const coverUrlRaw = coverUrlCol ? String(row[coverUrlCol] || "").trim() : "";
+      const coverUrl = coverUrlRaw ? coverUrlRaw.split(/[,;]/).map(u => u.trim()).filter(Boolean) : [];
+      const samplePdfUrl = samplePdfCol ? String(row[samplePdfCol] || "").trim() : "";
+
+      // Template
+      const templateTypeRaw = templateTypeCol ? String(row[templateTypeCol] || "standard").toLowerCase() : "standard";
+      const templateType = ["spiritual", "activity", "standard"].includes(templateTypeRaw) ? templateTypeRaw : "standard";
+
+      // Generate SKU if missing
+      const finalSku = skuRaw || `SKU-${Date.now()}-${i}`;
 
       books.push({
         title,
-        slug: toSlug(title),
+        slug: toSlug(title), // Basic slug, will handle uniqueness if needed via error or logic
         subtitle,
         isbn10,
         isbn13,
@@ -382,35 +336,26 @@ export const importBooks = async (req, res) => {
         pages,
         edition,
         printType,
-        mrp: mrp > 0 ? mrp : price,
+        mrp: mrp || price,
         price,
         discountPct,
         taxRate,
         currency,
         inventory: {
           sku: finalSku,
-          asin: finalAsin,
+          asin: asinRaw,
           stock,
           lowStockAlert,
         },
-        dimensions: {
-          weight,
-          length,
-          width,
-          height,
-        },
-        assets: {
-          coverUrl,
-          samplePdfUrl,
-        },
+        dimensions: { weight, length, width, height },
+        assets: { coverUrl, samplePdfUrl },
         categories,
         tags,
-        descriptionHtml: `<p>${description}</p>`,
+        descriptionHtml,
         whyChooseThis,
         suggestions,
         visibility,
         templateType,
-        // layoutConfig can be added manually later via CMS
         layoutConfig: {
           story: {},
           curriculum: [],
@@ -420,60 +365,41 @@ export const importBooks = async (req, res) => {
       });
     }
 
-    console.log(`📊 Processing summary:
-      - Total rows: ${data.length}
-      - Valid books: ${books.length}
-      - Skipped: ${skipped.length}
-      - Errors: ${errors.length}
-    `);
-
-    if (books.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "No valid books found in file",
-        details: {
-          totalRows: data.length,
-          skipped: skipped.slice(0, 10),
-          errors: errors.slice(0, 10),
-          availableColumns: Object.keys(data[0]),
-          sampleRow: data[0]
-        }
-      });
+    // ============================================================
+    // ✅ CRITICAL STEP: Ensure Categories Exist in DB
+    // ============================================================
+    if (allCategoriesSet.size > 0) {
+      console.log(`🔄 Ensuring ${allCategoriesSet.size} categories exist from import...`);
+      await ensureCategoriesExist(Array.from(allCategoriesSet));
     }
 
-    console.log(`💾 Inserting ${books.length} books into database...`);
-
+    // Insert Books (using unordered insert to skip duplicates if any)
     try {
       const result = await Book.insertMany(books, { ordered: false });
-      const insertedCount = result.length;
-
-      console.log(`✅ Successfully imported ${insertedCount} books`);
-
+      
       res.status(200).json({
         ok: true,
-        count: insertedCount,
-        message: `Successfully imported ${insertedCount} out of ${data.length} rows`,
+        count: result.length,
+        message: `Successfully imported ${result.length} books.`,
         details: {
-          inserted: insertedCount,
+          inserted: result.length,
           skipped: skipped.length,
-          errors: errors.length > 0 ? errors.slice(0, 5) : []
+          errors: errors.slice(0, 5)
         }
       });
 
     } catch (insertError) {
+      // Handle partial success (some duplicates)
       if (insertError.code === 11000) {
         const insertedCount = insertError.insertedDocs?.length || 0;
-        console.log(`⚠️ Partial import: ${insertedCount} books inserted, some duplicates skipped`);
-
         return res.status(200).json({
           ok: true,
           count: insertedCount,
-          message: `Imported ${insertedCount} books (some duplicates were skipped)`,
+          message: `Imported ${insertedCount} books. Some duplicates were skipped.`,
           details: {
             inserted: insertedCount,
             duplicates: books.length - insertedCount,
-            skipped: skipped.length,
-            errors: errors.length > 0 ? errors.slice(0, 5) : []
+            skipped: skipped.length
           }
         });
       }
@@ -481,13 +407,11 @@ export const importBooks = async (req, res) => {
     }
 
   } catch (error) {
-    console.error("❌ Import error:", error.message);
-    console.error("Stack:", error.stack);
-
-    res.status(500).json({
-      ok: false,
+    console.error("❌ Import error:", error);
+    res.status(500).json({ 
+      ok: false, 
       error: error.message || "Failed to import books",
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined 
     });
   }
 };
@@ -735,39 +659,33 @@ export const createBook = async (req, res, next) => {
   try {
     const body = sanitizePathsToRelative({ ...(req.body || {}) }, PUBLIC_BASES);
 
-    // Handle coverUrl array (Existing Logic)
+    // Handle coverUrl array
     if (typeof body.assets?.coverUrl === "string") {
       body.assets.coverUrl = [body.assets.coverUrl];
     } else if (!Array.isArray(body.assets?.coverUrl)) {
       body.assets = { ...(body.assets || {}), coverUrl: [] };
     }
 
-    // Handle whyChooseThis array (Existing Logic)
+    // Handle whyChooseThis array
     if (body.whyChooseThis) {
       if (typeof body.whyChooseThis === "string") {
-        body.whyChooseThis = body.whyChooseThis
-          .split(/[\n,]/)
-          .map(s => s.trim())
-          .filter(Boolean);
+        body.whyChooseThis = body.whyChooseThis.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
       } else if (!Array.isArray(body.whyChooseThis)) {
         body.whyChooseThis = [];
       }
     }
 
-    // Handle suggestions array (Existing Logic)
+    // Handle suggestions array
     if (body.suggestions) {
       if (typeof body.suggestions === "string") {
-        body.suggestions = body.suggestions
-          .split(/[,\n]/)
-          .map(s => s.trim())
-          .filter(Boolean);
+        body.suggestions = body.suggestions.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
       } else if (!Array.isArray(body.suggestions)) {
         body.suggestions = [];
       }
       body.suggestions = [...new Set(body.suggestions)];
     }
 
-    // Handle Language Capitalization (Existing Logic)
+    // Handle Language Capitalization
     if (body.language && typeof body.language === "string") {
       const trimmed = body.language.trim();
       if (trimmed.length > 0) {
@@ -775,6 +693,15 @@ export const createBook = async (req, res, next) => {
       }
     }
 
+    // Handle Categories Array (ensure it's an array)
+    if (body.categories && typeof body.categories === "string") {
+        body.categories = body.categories.split(",").map(c => c.trim()).filter(Boolean);
+    }
+
+    // ✅ STEP 1: Auto-create any missing categories
+    if (body.categories && body.categories.length > 0) {
+      await ensureCategoriesExist(body.categories);
+    }
 
     if (body.layoutConfig) {
       if (typeof body.layoutConfig === 'string') {
@@ -785,7 +712,6 @@ export const createBook = async (req, res, next) => {
           body.layoutConfig = {};
         }
       }
-      // Safety checks for nested arrays
       ['curriculum', 'specs', 'testimonials', 'trustBadges'].forEach(key => {
         if (body.layoutConfig[key] && !Array.isArray(body.layoutConfig[key])) {
           body.layoutConfig[key] = [];
@@ -800,9 +726,7 @@ export const createBook = async (req, res, next) => {
     res.json({ ok: true, book: doc });
   } catch (e) {
     if (e?.code === 11000) {
-      return res
-        .status(409)
-        .json({ ok: false, error: "A book with this title/slug already exists." });
+      return res.status(409).json({ ok: false, error: "A book with this title/slug already exists." });
     }
     return res.status(500).json({ ok: false, error: "Internal error", details: e.message });
   }

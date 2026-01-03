@@ -3,7 +3,9 @@ import {
   getPublicSettings, getAdminSettings,
   updateSiteSettings, updateThemeSettings,
   updateHomepage, upsertPayments,
-  getPopupSettings, getActivePopup, updatePopupSettings, trackPopup, updateCatalog
+  getPopupSettings, getActivePopup, updatePopupSettings, trackPopup, updateCatalog,
+  getAiSettings,
+  updateAiSettings
 } from "../controller/settingscontroller.js";
 import { requireAuth } from "../controller/_middleware/auth.js";
 
@@ -22,4 +24,6 @@ router.post("/payments", requireAuth(["admin", "editor"]), upsertPayments);
 router.put("/popup", requireAuth(["admin", "editor"]), updatePopupSettings);
 router.put("/catalog", requireAuth(["admin", "editor"]), updateCatalog);
 
+router.get("/ai", requireAuth(["admin", "editor"]), getAiSettings);
+router.put("/ai", requireAuth(["admin", "editor"]), updateAiSettings);
 export default router;

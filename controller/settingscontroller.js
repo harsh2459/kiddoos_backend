@@ -397,3 +397,83 @@ export const trackPopup = async (req, res) => {
     res.status(500).json({ ok: false, error: error.message });
   }
 };
+
+export const getAiSettings = async (req, res) => {
+  try {
+    // Default to Gemini 1.5 Flash (Most stable/free)
+    const config = await getKey("ai_config", {
+      provider: "gemini",
+      modelName: "gemini-1.5-flash", 
+      keys: [] 
+    });
+
+    // ✅ THE SENIOR EDITOR PROMPT (Auto-injected if DB is empty)
+    const defaultPrompt = `
+You are a senior publishing editor, curriculum designer, and marketing copy expert.
+Analyze the images deeply and infer the book’s intent, audience, subject, tone, and positioning.
+
+CRITICAL RULES (MANDATORY):
+- Output MUST be valid JSON only.
+- DO NOT include markdown.
+- NEVER return null/undefined.
+- Arrays must have items.
+- Text must be sales-ready.
+
+📦 REQUIRED JSON STRUCTURE (STRICT):
+{
+  "title": "Clear title",
+  "subtitle": "Value-driven subtitle",
+  "authors": ["Names"],
+  "language": "English",
+  "ageGroup": "e.g., 3-5",
+  "bookType": "Activity/Story",
+  "descriptionHtml": "<p>2 paragraphs</p>",
+  "categories": ["Category 1"],
+  "tags": ["SEO 1", "SEO 2"],
+  "whyChooseThis": ["Point 1", "Point 2"],
+  "layoutConfig": {
+    "story": { "heading": "Why this book?", "text": "Narrative..." },
+    "curriculum": [{ "title": "Skill", "icon": "star" }],
+    "specs": [{ "label": "Pages", "value": "30" }]
+  }
+}
+Return ONLY JSON.`;
+
+    const prompt = await getKey("ai_prompt", defaultPrompt);
+
+    res.json({ ok: true, config, prompt });
+  } catch (error) {
+    console.error("getAiSettings error:", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};
+
+// ✅ 2. UPDATE AI CONFIGURATION
+export const updateAiSettings = async (req, res) => {
+  try {
+    const { config, prompt } = req.body;
+
+    // Save Keys & Model Name
+    if (config) {
+      await Setting.findOneAndUpdate(
+        { key: "ai_config" },
+        { value: config },
+        { upsert: true, new: true }
+      );
+    }
+
+    // Save System Prompt
+    if (prompt) {
+      await Setting.findOneAndUpdate(
+        { key: "ai_prompt" },
+        { value: prompt },
+        { upsert: true, new: true }
+      );
+    }
+
+    res.json({ ok: true, message: "AI Settings updated successfully" });
+  } catch (error) {
+    console.error("updateAiSettings error:", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+};

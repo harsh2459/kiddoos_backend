@@ -18,7 +18,7 @@ export async function onOrderPaid(order) {
     await customer.save();
 
     // Send order email
-    await sendBySlug("order_paid", customer.email, {
+    await sendBySlug("order_confirmation", customer.email, {
       name: customer.name || "there",
       order_id: order._id,
       amount: order.amount,
