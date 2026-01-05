@@ -4,9 +4,9 @@ import stream from 'stream';
 
 // Configure Cloudinary
 cloudinary.config({
-  cloud_name: 'dphe8hssk',
-  api_key: '658981832913891',
-  api_secret: 'P49FZYc6BDPoBhbO6RLo2wVibpk' 
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET 
 });
 
 /**
